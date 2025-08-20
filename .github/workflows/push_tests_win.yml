@@ -1,0 +1,55 @@
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: Windows Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+  push:
+
+
+jobs:
+  test-win:
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch'
+    # contains(github.event.head_commit.message, 'run tests')
+
+    name: Test on Windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install Other Dependencies
+          # For burnman, need GitHub version to enable python 3.12 support.
+        run: |
+          python -m pip install pytest pytest-xdist
+      
+      - name: Install Package
+        shell: bash -el {0}
+        run: |
+          python -m pip install -v .[dev]
+
+      - name: Run pytest
+        run: pytest -n auto -v Tests/
+  
+    

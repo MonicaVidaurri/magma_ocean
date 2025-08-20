@@ -1,0 +1,120 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "magma"
+version = "0.1.0"
+description = "A Python package for planetary outgassing simulations"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+maintainers = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+keywords = ["geophysics", "magma", "viscosity", "planetary science"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "numba>=0.61.2"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist"
+]
+plotting = [
+    "matplotlib>=3.0.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/MonicaVidaurri/magma_ocean"
+Documentation = "https://github.com/MonicaVidaurri/magma_ocean/blob/main/README.md"
+Repository = "https://github.com/MonicaVidaurri/magma_ocean.git"
+"Bug Tracker" = "https://github.com/MonicaVidaurri/magma_ocean/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["magma*"]
+exclude = ["Tests*"]
+
+[tool.setuptools.package-dir]
+"" = "."
+
+# Testing configuration
+[tool.pytest.ini_options]
+testpaths = ["Tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "-ra",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+
+# Black code formatting
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | Tests/fixtures
+)/
+'''
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["magma"]
+omit = [
+    "*/Tests/*",
+    "*/tests/*",
+    "setup.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
