@@ -10,8 +10,8 @@ jobs:
   test-ubuntu:
     if: |
       github.event_name == 'pull_request' ||
-      github.event_name == 'workflow_dispatch'
-    #   contains(github.event.head_commit.message, 'run tests')
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, 'run tests')
 
     name: Test on Ubuntu
     runs-on: ubuntu-latest
