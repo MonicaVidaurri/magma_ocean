@@ -59,6 +59,7 @@ exclude = ["Tests*"]
 [tool.setuptools.package-dir]
 "" = "."
 
+
 # Testing configuration
 [tool.pytest.ini_options]
 testpaths = ["Tests"]
