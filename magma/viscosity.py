@@ -6,13 +6,14 @@ Originally the matlab files:
 - viscosity2.m
     - New function viscosity_sandu
 
-Converted to Python by Joe P. Renaud August 2025.
+Original model delevloped by Laura Schaefer (Stanford) ca. ????
+Converted to Python by Joe P. Renaud (NASA Goddard) August 2025.
 """
 
 import numpy as np
 from numba import njit
 
-# @njit
+@njit
 def viscosity_lebrun(Tm, Ts, rho_m, FH2O, meltfrac):
     """
     Calculate the viscosity of the magma ocean following Lebrun et al. (2013).

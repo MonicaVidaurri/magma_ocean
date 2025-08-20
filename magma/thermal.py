@@ -6,8 +6,10 @@ Originally the matlab files:
 
 Helper functions were also added.
 
-Converted to Python by Joe P. Renaud August 2025.
+Original model delevloped by Laura Schaefer (Stanford) ca. ????
+Converted to Python by Joe P. Renaud (NASA Goddard) August 2025.
 """
+from typing import Tuple
 
 import numpy as np
 from numba import njit
@@ -15,7 +17,7 @@ from numba import njit
 from magma.viscosity import viscosity_lebrun, viscosity_sandu
 
 @njit
-def calculate_thermal_diffusivity(km, rho_m, cp):
+def calculate_thermal_diffusivity(km, rho_m, cp) -> float:
     """
     Calculate thermal diffusivity from thermal properties.
     
@@ -36,7 +38,7 @@ def calculate_thermal_diffusivity(km, rho_m, cp):
     return km / (rho_m * cp)
 
 @njit
-def calculate_rayleigh_number(g, alpha, delta_T, Z, nu, kappa):
+def calculate_rayleigh_number(g, alpha, delta_T, Z, nu, kappa) -> float:
     """
     Calculate the Rayleigh number for thermal convection.
     
@@ -79,9 +81,9 @@ def calculate_rayleigh_number(g, alpha, delta_T, Z, nu, kappa):
     return (g * alpha * abs(delta_T) * Z**3) / (nu * kappa)
 
 
-# @njit
+@njit
 def mantle_heat_flux(Tm, Ts, rs, Rp, Rc, g, rho_m, FH2O, meltfrac,
-                     km = 4.2, alpha = 2.0e-5, cp = 1.2e3):
+                     km = 4.2, alpha = 2.0e-5, cp = 1.2e3) -> Tuple[float, float, float, float]:
     """
     Calculate the mantle heat flux based on temperature and viscosity.
     
