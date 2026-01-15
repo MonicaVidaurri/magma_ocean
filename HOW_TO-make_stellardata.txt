@@ -1,0 +1,23 @@
+To make new stellar data files:
+
+This model historically uses stellar tables by Baraffe et al. 2015
+which can be found at: https://perso.ens-lyon.fr/isabelle.baraffe/BHAC15dir/
+
+step 1. Go to tracks --> structure link
+
+step 2. Find the *mass* closest to the star you're trying to use
+    and copy the *time* and *L/Ls* columns. These will be your
+    tbol/Lbol columns that this model reads in.
+
+step 3. IMPORTANT: These are log values, so you will need to do
+    10^[value] for each column value.
+
+In this model I save these files as tab delimited text files. You can save
+them however you want - excel files that are comma separated, .npz files,
+space separated files, whatever you're feeling. Just make sure you're also
+changing the read-in method to correspond to that (so like, using pd.read_excel
+if you're using excel, or sep=',' if you're using comma separated, etc.)
+
+If you wanna freestyle a stellar file using your own data and wanna compare with
+the original GOOEY model but don't have the MATLAB license to do so, feel free
+to email me (check out the README file) and I'll make it happen!
