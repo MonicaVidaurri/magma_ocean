@@ -8,6 +8,8 @@ from physics.degas2 import degas2
 
 def moODEb2(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux,
     Lbol, Xi, FeOt, Temp_K, P_Pa, tsat, a, Mp, LStar):
+    """ Second phase / stage 2. Solidification starts. """
+
     # ------------------------------------------------------------------
     # constants
     sigma = 5.67e-8

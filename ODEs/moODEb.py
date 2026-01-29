@@ -10,6 +10,7 @@ import pandas as pd
 
 def moODEb(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, Xi, FeOt,
            Temp_K, P_Pa, tsat, a, Mp, LStar):
+    """ First time phase; There is a magma ocean. Entire mantle is molten. """
     # ------------------------------------------------------------------
     # constants
     sigma = 5.67e-8

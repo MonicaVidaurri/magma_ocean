@@ -4,8 +4,22 @@ from utils.get_meltfracb import get_meltfracb
 from utils.get_flux import get_flux
 from utils.get_loss import get_loss
 
+from TidalPy.rheology import Andrade, Elastic, Newton
+from TidalPy.RadialSolver import build_rs_input_homogeneous_layers, radial_solver
+
+from .tide_parameters import rs_kwargs
+
 def moODE3(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, Xi, FeOt,
            Temp_K, P_Pa, tsat, FH2O, a, Mp, LStar):
+    """ ODE when there is no magma ocean. Tectonic phase / last time phase. """
+    
+    # TODO: Inputs needed for tidal model
+    
+    # Leave constant 
+    orbital_freq = ...
+    eccentricity = ...
+    rotation_rate = ...
+    !! core_rho = ...
 
     # constants
     sigma = 5.67e-8          # Boltzmann constant (W/m2/K4)
@@ -101,9 +115,53 @@ def moODE3(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, 
     #######################################################################
     # mantle heat flux
     q_mantle, Db, uc, Ra, nu = mantleheatflux(Tm, Tsurf, Rp, Rp, Rc, g, rho, FH2O, meltfrac)
+    # nu == viscosity of magma ocean. 
+    !!! Need solid mantle viscosity for tides.
 
     if np.isnan(q_mantle):
         q_mantle
+    
+    #######################################################################
+    # Tidal Heating
+    ## Bottom up solidification -> Solid Core -> Solid Mantle -> Magma Ocean. 
+    ## Constants / Assumptions
+    core_bulk_modulus = 150.0e9  # Pa
+    core_shear_modulus = 0.0      # Pa
+    mantle_bulk_modulus = 100.0e9 # Pa
+    mantle_shear_modulus = 50.0e9 # Pa
+    core_bulk_viscosity = 1e30    # Pa s (does not matter under the elastic assumption)
+    mantle_bulk_viscosity = 1e30  # Pa s (does not matter under the elastic assumption)
+    core_shear_viscosity = 1000.0 # Pa s
+    tides_on_flag = True
+
+    if tides_on_flag:
+        ## Find Global Love Numbers
+        rs_input = build_rs_input_homogeneous_layers(
+            planet_radius=Rp,
+            forcing_frequency=orbital_freq,  # For now we will just stick to orbital freq (eccentricity tides)
+            density_tuple=(core_rho, rho),
+            static_bulk_modulus_tuple=(core_bulk_modulus, mantle_bulk_modulus),
+            static_shear_modulus_tuple=(core_shear_modulus, mantle_shear_modulus),
+            bulk_viscosity_tuple=(core_bulk_viscosity, mantle_bulk_viscosity),  # These are unused for the elastic bulk rheology
+            shear_viscosity_tuple=(core_shear_viscosity, nu),
+            layer_type_tuple=('solid', 'solid'),
+            layer_is_static_tuple=(True, False),
+            layer_is_incompressible_tuple=(True, False),
+            shear_rheology_model_tuple=(Newton(), Andrade()),
+            bulk_rheology_model_tuple=(Elastic(), Elastic()),
+            radius_fraction_tuple=(Rc / Rp, Rp),
+            perform_checks=True
+        )
+
+        rs_solution = radial_solver(*rs_input, **rs_kwargs)
+        if not rs_solution.success:
+            rs_solution.print_diagnostics()
+            raise RuntimeError("Radial solver failed for tidal calculation.")
+        
+
+
+tidal_heating = 
+
 
     #######################################################################
     # differential equations
