@@ -1,16 +1,20 @@
 import numpy as np
+
 from physics.mantleheatflux import mantleheatflux
 from utils.get_meltfracb import get_meltfracb
 from utils.get_flux import get_flux
 from utils.get_loss import get_loss
 
+from math import isclose
 from TidalPy.rheology import Andrade, Elastic, Newton
-from TidalPy.RadialSolver import build_rs_input_homogeneous_layers, radial_solver
+from TidalPy.toolbox import quick_dual_body_tidal_dissipation
+from TidalPy.constants import G
+from TidalPy.conversions.conversions_x import semi_a2orbital_motion
 
 from .tide_parameters import rs_kwargs
 
 def moODE3(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, Xi, FeOt,
-           Temp_K, P_Pa, tsat, FH2O, a, Mp, LStar):
+           Temp_K, P_Pa, tsat, FH2O, a, Mp, LStar, Rh, Mh, Mp):
     """ ODE when there is no magma ocean. Tectonic phase / last time phase. """
     
     # TODO: Inputs needed for tidal model
@@ -135,33 +139,72 @@ def moODE3(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, 
     tides_on_flag = True
 
     if tides_on_flag:
-        ## Find Global Love Numbers
-        rs_input = build_rs_input_homogeneous_layers(
-            planet_radius=Rp,
-            forcing_frequency=orbital_freq,  # For now we will just stick to orbital freq (eccentricity tides)
-            density_tuple=(core_rho, rho),
-            static_bulk_modulus_tuple=(core_bulk_modulus, mantle_bulk_modulus),
-            static_shear_modulus_tuple=(core_shear_modulus, mantle_shear_modulus),
-            bulk_viscosity_tuple=(core_bulk_viscosity, mantle_bulk_viscosity),  # These are unused for the elastic bulk rheology
-            shear_viscosity_tuple=(core_shear_viscosity, nu),
-            layer_type_tuple=('solid', 'solid'),
-            layer_is_static_tuple=(True, False),
-            layer_is_incompressible_tuple=(True, False),
-            shear_rheology_model_tuple=(Newton(), Andrade()),
-            bulk_rheology_model_tuple=(Elastic(), Elastic()),
-            radius_fraction_tuple=(Rc / Rp, Rp),
-            perform_checks=True
-        )
 
-        rs_solution = radial_solver(*rs_input, **rs_kwargs)
-        if not rs_solution.success:
-            rs_solution.print_diagnostics()
-            raise RuntimeError("Radial solver failed for tidal calculation.")
-        
+        # Unpack other dependent variables
+        eccentricity = Tr[7]
+        semi_major_axis = Tr[8]
+        spin_freq_p = Tr[9]
+        orbital_freq = semi_a2orbital_motion(semi_major_axis, Mh, Mp)
 
+        g_p = G * Mp / (Rp**2)
+        g_h = G * Mh / (Rh**2)
+        rho_bulk_p = Mp / ((4.0 / 3.0) * np.pi * Rp**3)
+        rho_bulk_h = Mh / ((4.0 / 3.0) * np.pi * Rh**3)
 
-tidal_heating = 
+        # For now just use basic MOI for now
+        moi_h = (2.0 / 5.0) * Mh * Rh**2
+        moi_p = (2.0 / 5.0) * Mp * Rp**2
 
+        # Tidally active region viscosity
+        tidal_scale_h = 1.0  # Amount of planet participating (full planet)
+        tidal_scale_p = (Rp - Rc) / Rp  # Amount of planet participating in tides (just mantle)
+        visc_h = 1.0e10  # star's viscosity (not used)
+        visc_p = nu * rho_m  # the viscosity above is kinetic; we want dynamic so multiple by the layer's density.'
+        shear_mod_h = 1.0e7  # Star shear (not used)
+        shear_mod_p = 50.0e9
+        rheology_h = 'cpl'  # Constant phase lag model
+        rheology_p = 'Andrade'
+        fixed_k2_h = 0.3
+        fixed_k2_p = 0.3  # unused for target planet due to real rheology
+        fixed_Q_h = 30000000
+        fixed_Q_p = 30000000 # unused for target planet due to real rheology
+
+        # Orbit/spin state (all these constants for now)
+        eccentricity = 0.1 
+        obliquity_h = 0.0
+        obliquity_p = 0.0
+        spin_freq_h = orbital_freq
+        spin_freq_p = orbital_freq
+
+        dissipation_results = quick_dual_body_tidal_dissipation(
+            radii=(Rh, Rp), masses=(Mh, Mp), gravities=(g_h, g_p), densities=(rho_bulk_h, rho_bulk_p),
+            mois=(moi_h, moi_p), viscosities=(visc_h, visc_p), shear_moduli=(shear_mod_h, shear_mod_p),
+            rheologies=(rheology_h, rheology_p), obliquities=(obliquity_h, obliquity_p),
+            spin_frequencies=(spin_freq_h, spin_freq_p), 
+            tidal_scales=(tidal_scale_h, tidal_scale_p),
+            fixed_k2s=(fixed_k2_h, fixed_k2_p), fixed_qs=(fixed_Q_h, fixed_Q_p),
+            eccentricity=eccentricity, orbital_freq=orbital_freq,
+            max_tidal_order_l=2, eccentricity_truncation_lvl=6,
+            use_obliquity=(not isclose(obliquity_p, 0.0)),
+            da_dt_scale=1., de_dt_scale=1.,
+            dspin_dt_scale=1.
+            )
+        de_dt = dissipation_results['eccentricity_derivative']
+        da_dt = dissipation_results['semi_major_axis_derivative']
+        dspin_dt_h = dissipation_results['host']['spin_rate_derivative']
+        dspin_dt_p = dissipation_results['secondary']['spin_rate_derivative']
+        tidal_heating_h = dissipation_results['host']['tidal_heating']
+        tidal_heating_p = dissipation_results['host']['tidal_heating']
+    else:
+        de_dt = 0.0
+        da_dt = 0.0
+        dspin_dt_h = 0.0
+        dspin_dt_p = 0.0
+        tidal_heating_h = 0.0
+        tidal_heating_p = 0.0
+    
+    # Update derivative array.
+    dTr_dt[]
 
     #######################################################################
     # differential equations
