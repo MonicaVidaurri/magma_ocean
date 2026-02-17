@@ -7,9 +7,12 @@ from utils.get_flux import get_flux
 from utils.get_loss import get_loss
 import pandas as pd
 
+from physics.tides import calculate_tidal_dissipation
+from TidalPy.conversions.conversions_x import semi_a2orbital_motion
+
 
 def moODEb(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, Xi, FeOt,
-           Temp_K, P_Pa, tsat, a, Mp, LStar):
+           Temp_K, P_Pa, tsat, a, Mp, LStar, Rh, Mh, tides_on_flag):
     """ First time phase; There is a magma ocean. Entire mantle is molten. """
     # ------------------------------------------------------------------
     # constants
@@ -28,32 +31,50 @@ def moODEb(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, 
 
     # mid-ocean ridge length
     Lridge = 2 * np.pi * Rp * 1.5
-
+    
     # stellar = pd.read_csv('data/stellar_dataTrappist1.txt', sep='\t')
     # Lbol = stellar['Lbol']
 
-    # unpack state vector
-    Tm = Tr[0]
-    rs = Tr[1]
+    # For this model the state vector equals:
+    #   0: Semi major axis
+    #   1: Eccentricity
+    #   2: Host spin Freq
+    #   3: Target spin freq
+    #   4: Mantle temperature
+    #   5: Solidification Radius (solid mantle below; liquid magma ocean above)
+    #   6: Water fraction in the solid mantle
+    #   7: Mass of water in the magma ocean
+    #   8: Mass of Excess Oxygen in the Magma Ocean
+    #   9: Mass of Excess Oxygen in the Solid Mantle
+    #   10: Surface temperature
+    # Build derivative array
+    dTr_dt = np.zeros(11, dtype=np.float64)
+    # Unpack state vector
+    semi_a = Tr[0]
+    eccentricity = Tr[1]
+    spin_freq_h = Tr[2]
+    spin_freq_p = Tr[3]
+    orbital_freq = semi_a2orbital_motion(semi_a, Mh, Mp)
+
+    Tm = Tr[4]
+    rs = Tr[5]
+    FH2Os = Tr[6] / Mmantle
 
     Mmo = (4.0 / 3.0) * np.pi * rho * (Rp**3 - rs**3)
     if rs > Rp:
         rs = Rp
         Mmo = 0.0
 
-    Wmo = Tr[3]
+    Wmo = Tr[7]
     if Wmo > 0.0:
         FH2O = Wmo / Mmo
     else:
         Wmo = 0.0
         FH2O = 0.0
 
-    MO_sol = Tr[5]
-    MO_mo = Tr[4]
-    Tsurf = Tr[6]
-    FH2Os = Tr[2] / Mmantle
-
-    dTr_dt = np.zeros(7)
+    MO_mo = Tr[8]
+    MO_sol = Tr[9]
+    Tsurf = Tr[10]
 
     # solidus parameters
     if (Rp - rs) > 405e9 / 77.89 / rho / g:
@@ -137,44 +158,64 @@ def moODEb(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, 
     # spreading rate
     S = 2 * Lridge * uc
 
+    #######################################################################
+    # Tidal Heating
+    ## Bottom up solidification -> Solid Core -> Solid Mantle -> Magma Ocean. 
+    da_dt, de_dt, dspin_dt_h, dspin_dt_p, tidal_heating_h, tidal_heating_p = calculate_tidal_dissipation(
+            eccentricity, orbital_freq, spin_freq_p, spin_freq_h,
+            Rp, Rh, Mp, Mh,
+            Tm, Rc, nu,
+            rho, meltfrac,
+            tides_on_flag
+    )
+    
+    # Update mantle heating
+    Q += tidal_heating_p
+
+    # Update derivative array.
+    dTr_dt[0] = da_dt
+    dTr_dt[1] = de_dt
+    dTr_dt[2] = dspin_dt_h
+    dTr_dt[3] = dspin_dt_p
+
     # ------------------------------------------------------------------
     # DIFFERENTIAL EQUATIONS
 
     # dTm/dt
     if rs < Rp:
-        dTr_dt[0] = 3.15569e7 * (
+        dTr_dt[4] = 3.15569e7 * (
             (-4 * np.pi * Rp**2 * q_mantle + Q)
             / (cp * (4.0 / 3.0) * np.pi * rho * (Rp**3 - rs**3)
                 - (4 * np.pi * rho * dHf * rs**2) * B))
     else:
-        dTr_dt[0] = 3.15569e7 * ((-4 * np.pi * Rp**2 * q_mantle + Q) / (cp * Mmantle))
+        dTr_dt[4] = 3.15569e7 * ((-4 * np.pi * Rp**2 * q_mantle + Q) / (cp * Mmantle))
 
     # drs/dt
     if rs < Rp:
-        dTr_dt[1] = B * dTr_dt[0]
+        dTr_dt[5] = B * dTr_dt[4]
     else:
-        dTr_dt[1] = 0.0
+        dTr_dt[5] = 0.0
 
     # solid mantle water
     if FH2O > 0:
-        dTr_dt[2] = -kH2O * FH2O * (-4 * np.pi * rho * rs**2 * dTr_dt[1])
+        dTr_dt[6] = -kH2O * FH2O * (-4 * np.pi * rho * rs**2 * dTr_dt[5])
     else:
-        dTr_dt[2] = 0.0
+        dTr_dt[6] = 0.0
 
     # magma ocean + atmosphere water
     if Wmo > 0:
-        dTr_dt[3] = (-dTr_dt[2] - 3.15569e7 * 4 * np.pi * Rp**2 * phi_H * muH2O / 2 / muH)
+        dTr_dt[7] = (-dTr_dt[6] - 3.15569e7 * 4 * np.pi * Rp**2 * phi_H * muH2O / 2 / muH)
     else:
-        dTr_dt[3] = 0.0
+        dTr_dt[7] = 0.0
 
     # solid mantle oxygen
-    dTr_dt[5] = (
+    dTr_dt[9] = (
         FFeO1_5
         * 4
         * np.pi
         * rho
         * rs**2
-        * dTr_dt[1]
+        * dTr_dt[5]
         * 0.5
         * muO
         / muFeO1_5
@@ -182,30 +223,30 @@ def moODEb(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, 
 
     # magma ocean + atmosphere oxygen
     if Wmo > 0 and PO2 > 0:
-        dTr_dt[4] = (
+        dTr_dt[8] = (
             4
             * np.pi
             * Rp**2
             * 3.15569e7
             * (phi_H * muO / 2 / muH - phi_O)
-            - dTr_dt[5]
+            - dTr_dt[9]
         )
     elif Wmo > 0 and PO2 <= 0:
-        dTr_dt[4] = (
+        dTr_dt[8] = (
             4
             * np.pi
             * Rp**2
             * 3.15569e7
             * (phi_H * muO / 2 / muH)
-            - dTr_dt[5]
+            - dTr_dt[9]
         )
     elif Wmo <= 0 and PO2 > 0:
-        dTr_dt[4] = -dTr_dt[5]
+        dTr_dt[8] = -dTr_dt[9]
     else:
-        dTr_dt[4] = 0.0
+        dTr_dt[8] = 0.0
 
     # surface temperature
-    dTr_dt[6] = 3.15569e7 * 4 * np.pi * Rp**2 * (
+    dTr_dt[10] = 3.15569e7 * 4 * np.pi * Rp**2 * (
         (-flux + q_mantle)
         / (
             cpH2O * Patm * 4 * np.pi * Rp**2 / g

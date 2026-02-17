@@ -10,6 +10,8 @@ import pandas as pd
 from functools import partial
 import matplotlib.pyplot as plt
 
+from TidalPy.conversions.conversions_x import semi_a2orbital_motion
+
 #########################################
 ############ USER INPUT HERE ############
 # Load stellar and OLR data
@@ -68,6 +70,11 @@ MSun = 1.989e30 # [kg]
 LSun = 3.846e26 # [W]
 MStar = params['MStar'] * MSun  # stellar mass [Msun]
 LStar = params['LStar'] * LSun  # stellar luminosity [Lsun]
+
+# Need the host star radius to calculate change in spin rate.
+# TODO: Connect to params dict! Hardcoded for now
+host_radius = 1.0 * 6.957e8
+
 # Read from star and OLR files
 olr_data = np.load('data/OLRdatab.npz')
 Temp_K = olr_data['Temp_K']
@@ -113,16 +120,33 @@ muO = 15.9994e-3
 muFeO1_5 = 159.689e-3 / 2
 muFeO = 71.845e-3
 
+# Tide flag
+tides_on_flag = False
+
+# Initial orbital and spin conditions
+# TODO: add these to params. Most are pulled from trappist1
+# TODO: explore parameter space
+initial_semi_a = (0.02925 * 1.496e+11)
+initial_orbital_freq = semi_a2orbital_motion(initial_semi_a, MStar, Mp)
+initial_eccentricity = 0.1
+initial_spin_host = 2 * np.pi / (86400.0 * 3.295)
+initial_spin_planet = 10 * initial_orbital_freq  # Start it out spinning much faster than orbital motion
+
 # Initial conditions for phase 1
-Tr0 = np.zeros(7)
-Tr0[0] = params['mantle_temp']  # mantle temperature
-Tr0[1] = max(Rp - (Tr0[0] - Tsol2) * Cp / (Tsol1 * rho * gp * Cp - alpha * gp * Tr0[0]), Rc) #initial depth of base of magma ocean
-Mmo0 = 4 / 3 * np.pi * rho * (Rp ** 3 - Tr0[1] ** 3) #initial mass of magma ocean
-Tr0[2] = MH2O - FH2O * Mmo0 #initial abundance of H2O in solid phase
-Tr0[3] = FH2O * Mmo0 #total initial water abundance
-Tr0[4] = FeOt * Fe3_Fet * Mmo0 * (muO / 2 / muFeO1_5) #total initial mass of O in FeO(1.5)
-Tr0[5] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2 / muFeO1_5) #mass of O stored in solid FeO(1.5)
-Tr0[6] = Tr0[0] - 1  #initial surface temperature is equal to initial potential temp
+Tr0 = np.zeros(11, dtype=np.float64)
+Tr0[0] = initial_semi_a
+Tr0[1] = initial_eccentricity
+Tr0[2] = initial_spin_host
+Tr0[3] = initial_spin_planet
+
+Tr0[4] = params['mantle_temp']  # mantle temperature
+Tr0[5] = max(Rp - (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho * gp * Cp - alpha * gp * Tr0[4]), Rc) #initial depth of base of magma ocean
+Mmo0 = 4 / 3 * np.pi * rho * (Rp ** 3 - Tr0[5] ** 3) #initial mass of magma ocean
+Tr0[6] = MH2O - FH2O * Mmo0 #initial abundance of H2O in solid phase
+Tr0[7] = FH2O * Mmo0 #total initial water abundance
+Tr0[8] = FeOt * Fe3_Fet * Mmo0 * (muO / 2 / muFeO1_5) #total initial mass of O in FeO(1.5)
+Tr0[9] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2 / muFeO1_5) #mass of O stored in solid FeO(1.5)
+Tr0[10] = Tr0[4] - 1  #initial surface temperature is equal to initial potential temp
 
 #########################################
 # Phase 1 - bigass ball of magma baby!!!!
@@ -148,7 +172,8 @@ def monitor_ode(fun, t_span, y0, phase_name, **kwargs):
 phase1_ode = partial(
     moODEb.moODEb, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho=rho, g=gp,
     Ts=Temp_K, Ps=P_Pa, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol,
-    Xi=Xi, FeOt=FeOt, Temp_K=Temp_K, P_Pa=P_Pa, tsat=1e9, a=a, Mp=Mp, LStar=LStar)
+    Xi=Xi, FeOt=FeOt, Temp_K=Temp_K, P_Pa=P_Pa, tsat=1e9, a=a, Mp=Mp, LStar=LStar,
+    Rh=host_radius, Mh=MSun, tides_on_flag=tides_on_flag)
 
 sol1 = solve_ivp(phase1_ode, t_span=[1, 7.6e9], y0=Tr0, method='BDF', events=[mo_event])
 
@@ -158,20 +183,27 @@ sol1 = monitor_ode(phase1_ode, t_span=[1, 7.6e9], y0=Tr0, phase_name='Phase 1', 
 #########################################
 # Phase 2 - starting to solidify......
 #########################################
-Tr0_2 = np.zeros(5)
-Tr0_2[0] = sol1.y[0, -1]  # mantle temp
-Tr0_2[1] = sol1.y[2, -1] + sol1.y[3, -1] - sol1.y[6, -1] * 4 * np.pi * Rp ** 2 / gp
-Tr0_2[2] = sol1.y[6, -1] * 4 * np.pi * Rp ** 2 / gp  # water in atmosphere
-Tr0_2[3] = sol1.y[4, -1] * gp / (4 * np.pi * Rp ** 2)  # O2 in atm
-Tr0_2[4] = sol1.y[6, -1]  # surface temp
+Tr0_2 = np.zeros(9)
+Tr0_2[0] = sol1.y[0, -1]
+Tr0_2[1] = sol1.y[1, -1]
+Tr0_2[2] = sol1.y[2, -1]
+Tr0_2[3] = sol1.y[3, -1]
+
+Tr0_2[4] = sol1.y[4, -1]  # mantle temp
+
+Tr0_2[5] = sol1.y[6, -1] + sol1.y[7, -1] - sol1.y[10, -1] * 4 * np.pi * Rp ** 2 / gp
+Tr0_2[6] = sol1.y[10, -1] * 4 * np.pi * Rp ** 2 / gp  # water in atmosphere
+Tr0_2[7] = sol1.y[8, -1] * gp / (4 * np.pi * Rp ** 2)  # O2 in atm
+Tr0_2[8] = sol1.y[10, -1]  # surface temp
 
 phase2_ode = partial(
     moODEb2.moODEb2, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho=rho, g=gp,
     Ts=Temp_K, Ps=P_Pa, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol,
-    Xi=Xi, FeOt=FeOt, Temp_K=Temp_K, P_Pa=P_Pa, tsat=1e9, a=a, Mp=Mp, LStar=LStar)
+    Xi=Xi, FeOt=FeOt, Temp_K=Temp_K, P_Pa=P_Pa, tsat=1e9, a=a, Mp=Mp, LStar=LStar,
+    Rh=host_radius, Mh=MSun, tides_on_flag=tides_on_flag)
 
 Tr0_2 = Tr0_2.copy()
-Tr0_2[1] += 1e-12 * Mmantle
+Tr0_2[5] += 1e-12 * Mmantle
 sol2 = solve_ivp(phase2_ode, t_span=[sol1.t[-1], 7.6e9], y0=Tr0_2, method='BDF', events=[mo_event2])
 
 sol2 = monitor_ode(phase2_ode, t_span=[sol1.t[-1], 7.6e9], y0=Tr0_2, phase_name='Phase 2', method='BDF', events=[mo_event2])
@@ -180,22 +212,30 @@ sol2 = monitor_ode(phase2_ode, t_span=[sol1.t[-1], 7.6e9], y0=Tr0_2, phase_name=
 # Phase 3 - mantle + plate tectonics + passive outgassing
 #########################################
 FH2O3 = Tr0_2[1] / Mmantle
-Tr0_3 = np.zeros(4)
-Tr0_3[0] = sol2.y[0, -1]  # mantle temp
-Tr0_3[1] = sol2.y[2, -1]  # water in atmosphere
-Tr0_3[2] = sol2.y[3, -1]  # O2 in atm
-Tr0_3[3] = sol2.y[4, -1]  # surface temp
+Tr0_3 = np.zeros(8)
+Tr0_2[0] = sol1.y[0, -1]
+Tr0_2[1] = sol1.y[1, -1]
+Tr0_2[2] = sol1.y[2, -1]
+Tr0_2[3] = sol1.y[3, -1]
+
+Tr0_3[4] = sol2.y[4, -1]  # mantle temp
+Tr0_3[5] = sol2.y[6, -1]  # water in atmosphere
+Tr0_3[6] = sol2.y[7, -1]  # O2 in atm
+Tr0_3[7] = sol2.y[8, -1]  # surface temp
 
 phase3_ode = partial(
     moODE3.moODE3, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho=rho, g=gp,
     Ts=Temp_K, Ps=P_Pa, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol,
-    Xi=Xi, FeOt=FeOt, Temp_K=Temp_K, P_Pa=P_Pa, tsat=1e9, FH2O=FH2O3, a=a, Mp=Mp, LStar=LStar)
+    Xi=Xi, FeOt=FeOt, Temp_K=Temp_K, P_Pa=P_Pa, tsat=1e9, FH2O=FH2O3, a=a, Mp=Mp, LStar=LStar,
+    Rh=host_radius, Mh=MSun, tides_on_flag=tides_on_flag)
 
 sol3 = solve_ivp(phase3_ode, t_span=[sol2.t[-1], 7.6e9], y0=Tr0_3, method='BDF', events=[mo_event3])
 
 sol3 = monitor_ode(phase3_ode, t_span=[sol2.t[-1], 7.6e9], y0=Tr0_3, phase_name='Phase 3', method='BDF', events=[mo_event3])
 #==========================================================================
 
+
+# JPR Left off 2026-02-17
 
 # Post-processing
 #########################################
