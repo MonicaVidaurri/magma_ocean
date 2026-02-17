@@ -1,3 +1,10 @@
+# DEPENDENCIES
+TidalPy
+scipy
+numpy
+tqdm
+CyRK
+
 !!!!!!!!!!!!!!!! FIRST, A SUPER DUPER IMPORTANT NOTE !!!!!!!!!!!!!!!
 Right now if you want to change the XUV model you have to manually do so in
 utils/get_loss.py. I know, I know - sorry about that.

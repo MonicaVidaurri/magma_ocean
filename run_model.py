@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from functools import partial
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from scipy.integrate import solve_ivp as scisolve_ivp
 from CyRK import pysolve_ivp
@@ -92,8 +93,8 @@ host_radius = 1.0 * 6.957e8
 
 # Integration parameters
 integration_method = 'RK45' # 'BDF'
-integration_rtol = 1.0e-5
-integration_atol = 1.0e-8
+integration_rtol = 1.0e-4
+integration_atol = 1.0e-6
 
 start_time = 1.0
 end_time = 8.0e9 # 7.6e9
@@ -144,7 +145,7 @@ muFeO1_5 = 159.689e-3 / 2
 muFeO = 71.845e-3
 
 # Tide flag
-tides_on_flag = False
+tides_on_flag = True
 
 # Initial orbital and spin conditions
 # TODO: add these to params. Most are pulled from trappist1
@@ -175,22 +176,48 @@ Tr0[10] = Tr0[4] - 1  #initial surface temperature is equal to initial potential
 # Phase 1 - bigass ball of magma baby!!!!
 #########################################
 def monitor_ode(fun, t_span, y0, phase_name, **kwargs):
-    '''Print phase and time in Myr as the model runs.'''
+    """
+    Wraps solve_ivp with a tqdm progress bar.
+    """
     t0, tf = t_span
-    last_print = t0  # keep track to avoid flooding terminal
-    print_interval = (tf - t0) / 50  # print ~50 times per phase
+    
+    # Initialize tqdm
+    # unit_scale=True will auto-convert 1e6 to '1M', 1e9 to '1G', etc.
+    with tqdm(total=tf - t0, unit="yr", desc=phase_name, unit_scale=True) as pbar:
+        
+        # We use a mutable container for the last time to handle solver backtracking
+        # (Solvers sometimes try a step, reject it, and try a smaller step)
+        state = {'last_t': t0}
 
-    def wrapped_fun(t, y):
-        nonlocal last_print
-        # Print only every print_interval
-        if t - last_print >= print_interval or t == t0:
-            pct = 100 * (t - t0) / (tf - t0)
-            print(f'{phase_name}: t = {t/1e6:.2f} Myr ({pct:.1f}%); y = {y}')
-            last_print = t
-        return fun(t, y)
+        def wrapped_fun(t, y):
+            # Calculate time step since last accepted update
+            dt = t - state['last_t']
+            
+            # Only update if time moved forward (ignore solver backtracking/trial steps)
+            if dt > 0:
+                pbar.update(dt)
+                state['last_t'] = t
+                
+                # Update the displayed variables (y)
+                # Formatting y to 2 decimal places for readability
+                # formatted_y = [f"{val:.2e}" for val in y] if hasattr(y, '__iter__') else f"{y:.2e}"
+                # pbar.set_postfix(y=formatted_y, refresh=False)
+            
+            return fun(t, y)
 
-    sol = solve_ivp(wrapped_fun, t_span, y0, **kwargs)
-    return sol
+        # Run the solver
+        sol = solve_ivp(wrapped_fun, t_span, y0, **kwargs)
+        
+        # Ensure the bar hits 100% if the solver finished successfully at tf
+        # (If an event stopped it early, this leaves the bar at the event time, which is correct)
+        if sol.status == 0 and sol.t[-1] >= tf:
+            pbar.n = pbar.total
+            pbar.refresh()
+
+    if sol.success:
+        return sol
+    else:
+        raise Exception(f"Integration failed at t={sol.t[-1]} for {phase_name}: {sol.message}.")
 
 phase1_ode = partial(
     moODE_phase1, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho=rho, g=gp,
@@ -251,11 +278,10 @@ phase3_ode = partial(
     Xi=Xi, FeOt=FeOt, Temp_K=Temp_K, P_Pa=P_Pa, tsat=1e9, FH2O=FH2O3, Mp=Mp, LStar=LStar,
     Rh=host_radius, Mh=MSun, tides_on_flag=tides_on_flag)
 
-sol3 = monitor_ode(phase3_ode, t_span=(sol2.t[-1], end_time), y0=Tr0_3, phase_name='Phase 3', method=integration_method, events=[moEvent_phase3], rtol=integration_rtol, atol=integration_atol)
+phase_3_events = [moEvent_phase3]
+phase_3_events = None  # Turn off phase 3 events for now. 
+sol3 = monitor_ode(phase3_ode, t_span=(sol2.t[-1], end_time), y0=Tr0_3, phase_name='Phase 3', method=integration_method, events=phase_3_events, rtol=integration_rtol, atol=integration_atol)
 #==========================================================================
-
-
-# JPR Left off 2026-02-17
 
 # Post-processing
 #########################################
@@ -348,18 +374,22 @@ def plot_magma_ocean(results):
     fig_orb, ax_orb = plt.subplots(figsize=(8, 5))
     ax_orb.set_xscale('log')
     ax2_orb = ax_orb.twinx()
-    ax_orb.plot(t_tot, semia_tot/1.496e+11, color='blue')
-    ax2_orb.plot(t_tot, eccen_tot, label='Eccentricity', color='red')
+    ax_orb.plot(t_tot, semia_tot/1.496e+11, color='red')
+    ax2_orb.plot(t_tot, eccen_tot, label='Eccentricity', color='blue')
 
     ax_orb.set_xlabel('Time [yr]')
-    ax_orb.set_ylabel('Semi Major Axis [Au]')
-    ax2_orb.set_ylabel('Eccentricity')
+    ax_orb.set_ylabel('Semi Major Axis [Au]', c='red')
+    ax2_orb.set_ylabel('Eccentricity', c='blue')
+    ax_orb.spines['left'].set_color('red')
+    ax2_orb.spines['right'].set_color('blue')
     ax_orb.set_title('Orbital Evolution')
     ax_orb.set_xscale('log')
     ax_orb.set_yscale('log')
     ax2_orb.set_yscale('log')
     ax_orb.grid(True)
     fig_orb.tight_layout()
+    ax_orb.tick_params(axis='y', color='red', labelcolor='red')
+    ax2_orb.tick_params(axis='y', color='blue', labelcolor='blue')
 
     # Spin Plot
     spin_host_period = (2 * np.pi / spin_host_tot)/86400.0
