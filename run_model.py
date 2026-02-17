@@ -145,7 +145,7 @@ muFeO1_5 = 159.689e-3 / 2
 muFeO = 71.845e-3
 
 # Tide flag
-tides_on_flag = True
+tides_on_flag = False
 
 # Initial orbital and spin conditions
 # TODO: add these to params. Most are pulled from trappist1
