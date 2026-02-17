@@ -6,10 +6,10 @@ from utils.get_loss import get_loss
 from physics.degas2 import degas2
 
 from physics.tides import calculate_tidal_dissipation
-from TidalPy.conversions.conversions_x import semi_a2orbital_motion
+from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 
-def moODEb2(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux,
-    Lbol, Xi, FeOt, Temp_K, P_Pa, tsat, a, Mp, LStar, Rh, Mh, tides_on_flag):
+def moODE(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux,
+    Lbol, Xi, FeOt, Temp_K, P_Pa, tsat, Mp, LStar, Rh, Mh, tides_on_flag):
     """ Second phase / stage 2. Solidification starts. """
 
     # ------------------------------------------------------------------
@@ -91,7 +91,7 @@ def moODEb2(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux,
 
     # atmospheric loss
     phi_H, phi_O = get_loss(
-        t_flux, Lbol, t, PO2, Patm, tsat, a, Mp, Rp, LStar
+        t_flux, Lbol, t, PO2, Patm, tsat, semi_a, Mp, Rp, LStar
     )
 
     # radioactive heating

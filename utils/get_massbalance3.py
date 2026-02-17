@@ -1,96 +1,162 @@
 import numpy as np
-from get_massbalance2 import get_massbalance2
-from get_fO2 import get_fO2
+from .get_massbalance2 import get_massbalance2
+from .get_fO2 import get_fO2
 
-def get_massbalance3(Tm, Patm, Mmo, MO_mo, Xi, FeOt, gp, Rp):
-    '''
-    calculate FeO1.5/O2 mass balance in magma ocean + atmosphere.
+def get_massbalance3(
+        melt_temp, 
+        atm_pressure, 
+        magma_mass, 
+        total_oxygen_mass, 
+        composition, 
+        total_iron_fraction, 
+        gravity, 
+        planet_radius
+    ):
+    """
+    Calculates mass balance for Oxygen using a fixed-point iteration method.
+    
+    This function attempts to solve for the FeO1.5 content using a fast iterative 
+    approach. If convergence is slow or unstable (step count > 50), it falls back 
+    to either a stoichiometric approximation (for low oxygen) or the robust 
+    bisection method (calculate_oxygen_mass_balance).
 
     Parameters
     ----------
-    Tm : float
-        Mantle temperature (K)
-    Patm : float
-        Atmospheric pressure (Pa)
-    Mmo : float
-        Mass of magma ocean (kg)
-    MO_mo : float
-        Total O mass in system (kg)
-    Xi : ndarray, shape (12,)
-        Mole fractions of oxides
-    FeOt : float
-        Total Fe fraction in magma ocean
-    gp : float
-        Surface gravity (m/s^2)
-    Rp : float
-        Planet radius (m)
+    melt_temp : float
+        Temperature of the silicate melt (Kelvin).
+    atm_pressure : float
+        Atmospheric surface pressure (Pascals).
+    magma_mass : float
+        Total mass of the magma ocean (kg).
+    total_oxygen_mass : float
+        Total mass of Oxygen in the magma ocean + atmosphere system (kg).
+    composition : ndarray
+        1D array of oxide mole fractions in the melt.
+    total_iron_fraction : float
+        Mass fraction of total Iron (Fe) in the magma ocean.
+    gravity : float
+        Gravitational acceleration (m/s^2).
+    planet_radius : float
+        Radius of the planet (m).
 
     Returns
     -------
-    PO2 : float
-        Atmospheric O2 pressure (Pa)
-    FFeO1_5 : float
-        Mass fraction of FeO1.5
-    count : int
-        Number of iterations performed
-    nFeO1_5 : float
-        Moles of FeO1.5
-    '''
+    partial_pressure_o2 : float
+        Partial pressure of Oxygen in the atmosphere (Pascals).
+    mass_fraction_feo1_5 : float
+        Mass fraction of FeO1.5 in the magma ocean.
+    iteration_count : int
+        Number of iterations performed.
+    moles_feo1_5 : float
+        Total moles of FeO1.5 in the magma ocean.
+    """
 
-    muO = 15.9994e-3
-    muFeO1_5 = 159.689e-3 / 2
-    muFeO = 71.845e-3
+    # --- Physical Constants ---
+    MOLAR_MASS_O = 15.9994e-3          # kg/mol
+    MOLAR_MASS_FEO1_5 = 159.689e-3 / 2 # kg/mol
+    MOLAR_MASS_FEO = 71.845e-3         # kg/mol
 
-    nFeOt = FeOt * Mmo / muFeO
-    nO_t = MO_mo / muO
+    # --- Initial Molar Calculations ---
+    moles_iron_total = total_iron_fraction * magma_mass / MOLAR_MASS_FEO
+    moles_oxygen_total = total_oxygen_mass / MOLAR_MASS_O
 
+    # --- Inner Helper Function: Fixed-Point Step ---
+    def calculate_next_y(y_current):
+        """
+        Calculates the next estimate for moles of FeO1.5 (y) based on 
+        rearranging the equilibrium mass balance equation.
+        """
+        # Protect against log(<=0) or division by zero
+        # y_current is moles of FeO1.5. (moles_iron_total - y_current) is moles of FeO.
+        safe_y = np.clip(y_current, 1e-20, moles_iron_total - 1e-20)
+        
+        # Calculate term inside exponential (Thermodynamic relation)
+        # Mapping indices: MATLAB Xi(3)->[2], Xi(9)->[8], Xi(5)->[4], Xi(6)->[5], Xi(7)->[6]
+        log_ratio = np.log(safe_y / (moles_iron_total - safe_y))
+        
+        term_temp = -1.1492e4 / melt_temp
+        term_const = 6.675
+        term_comp = (2.243 * composition[2] + 
+                     1.828 * composition[8] - 
+                     3.201 * composition[4] - 
+                     5.854 * composition[5] - 
+                     6.215 * composition[6])
+        
+        term_correction = 3.36 * (1.0 - 1673.0 / melt_temp - np.log(melt_temp / 1673.0))
+        
+        term_pressure = (7.01e-7 * atm_pressure / melt_temp + 
+                         1.54e-10 * (melt_temp - 1673.0) * atm_pressure / melt_temp - 
+                         3.85e-17 * (atm_pressure**2) / melt_temp)
+        
+        exponent = (log_ratio + term_temp + term_const + term_comp + 
+                    term_correction + term_pressure) / 0.196
+        
+        # Calculate new estimate for y
+        # Based on: y_new = 2 * (nO_t - nO_atm)
+        # Where nO_atm is derived from equilibrium relation
+        surface_factor = 4 * np.pi * planet_radius**2 / (MOLAR_MASS_O * gravity)
+        return 2 * (moles_oxygen_total - surface_factor * np.exp(exponent))
+
+    # --- Iteration Loop ---
     count = 0
-    y0 = nFeOt * 1e-3
+    y_current = moles_iron_total * 1e-3  # Initial guess
+    
+    # Initialize outputs to ensure they exist if loop breaks early
+    partial_pressure_o2 = 0.0
+    mass_fraction_feo1_5 = 0.0
+    moles_feo1_5 = 0.0
 
     while count <= 100:
-        y = getf(y0, Tm, Xi, Patm, nO_t, nFeOt, gp, Rp)
-
-        if abs(y - y0) < 1e-12 and y > 0:
-            nFeO1_5 = y
-            nO_atm = nO_t - 0.5 * nFeO1_5
-            PO2 = (nO_atm * muO) * gp / (4 * np.pi * Rp**2)
-            FFeO1_5 = nFeO1_5 * muFeO1_5 / Mmo
+        y_next = calculate_next_y(y_current)
+        
+        # Check for Convergence
+        if np.abs(y_next - y_current) < 1e-12 and y_next > 0:
+            moles_feo1_5 = y_next
+            moles_o_atm = moles_oxygen_total - 0.5 * moles_feo1_5
+            
+            partial_pressure_o2 = (moles_o_atm * MOLAR_MASS_O * gravity) / (4 * np.pi * planet_radius**2)
+            mass_fraction_feo1_5 = moles_feo1_5 * MOLAR_MASS_FEO1_5 / magma_mass
             break
-
+        
         count += 1
+        
+        # Fallback Logic for Slow Convergence
+        if count >= 50:
+            if moles_oxygen_total < 1e-3 * moles_iron_total:
+                # Case 1: Low Oxygen - Approximation
+                moles_feo1_5 = moles_oxygen_total * 2
+                moles_o_atm = moles_oxygen_total - 0.5 * moles_feo1_5
+                
+                partial_pressure_o2 = (moles_o_atm * MOLAR_MASS_O * gravity) / (4 * np.pi * planet_radius**2)
+                mass_fraction_feo1_5 = moles_feo1_5 * MOLAR_MASS_FEO1_5 / magma_mass
+                break
+            
+            else:
+                # Case 2: High Oxygen - Use Robust Bisection Solver
+                # Calls the function defined in the previous step
+                partial_pressure_o2, mass_fraction_feo1_5, _, moles_feo1_5 = get_massbalance2(
+                    melt_temp, atm_pressure, magma_mass, moles_oxygen_total * MOLAR_MASS_O, 
+                    composition, total_iron_fraction, gravity, planet_radius
+                )
+                
+                # Re-calculate moles_o_atm to ensure consistency
+                moles_o_atm = moles_oxygen_total - 0.5 * moles_feo1_5
+                break
+        
+        y_current = y_next
 
-        if count >= 50 and nO_t < 1e-3 * nFeOt:
-            nFeO1_5 = nO_t * 2
-            nO_atm = nO_t - 0.5 * nFeO1_5
-            PO2 = (nO_atm * muO) * gp / (4 * np.pi * Rp**2)
-            FFeO1_5 = nFeO1_5 * muFeO1_5 / Mmo
-            break
-        elif count >= 50 and nO_t > 1e-3 * nFeOt:
-            PO2, FFeO1_5, mark, nFeO1_5 = get_massbalance2(
-                Tm, Patm, Mmo, MO_mo, Xi, FeOt, gp, Rp
-            )
-            nO_atm = nO_t - 0.5 * nFeO1_5
-            break
+    # --- Post-Processing Safety Checks ---
+    # The original code attempts to calculate fO2 using an external function 'get_fO2'
+    # if PO2 is non-positive. We include placeholders here.
+    
+    if partial_pressure_o2 <= 0:
+        # Construct the modified composition array required by get_fO2
+        # MATLAB: [Xi(1:10) nFeOt-2*nO_t 2*nO_t]
+        
+        # Note: We assume composition has at least 10 elements.
+        # We append two new values representing specific Fe/O stoichiometries.
+        new_composition = np.concatenate([composition[:10], 
+                                          [moles_iron_total - 2*moles_oxygen_total, 2*moles_oxygen_total]])
+        partial_pressure_o2 = get_fO2(melt_temp, atm_pressure, new_composition)
 
-        y0 = y
-
-    # fallback fO2 if PO2 invalid
-    if PO2 == 0 or PO2 < 0:
-        X_fO2 = np.concatenate([Xi[:10], [nFeOt - 2*nO_t, 2*nO_t]])
-        PO2 = get_fO2(Tm, Patm, X_fO2)
-
-    return PO2, FFeO1_5, count, nFeO1_5
-
-
-def getf(y, Tm, Xi, Patm, nO_t, nFeOt, gp, Rp):
-    '''
-    Helper function for fixed-point iteration in get_massbalance3.
-    '''
-    muO = 15.9994e-3
-    term = (np.log(y / (nFeOt - y)) - 1.1492e4 / Tm + 6.675 + 2.243 * Xi[3] + 1.828 * Xi[9] - 3.201 * Xi[5]
-        - 5.854 * Xi[6] - 6.215 * Xi[7] + 3.36 * (1 - 1673 / Tm - np.log(Tm / 1673)) + 7.01e-7 * Patm / Tm
-        + 1.54e-10 * (Tm - 1673) * Patm / Tm - 3.85e-17 * Patm**2 / Tm)
-
-    fO2term = np.exp(term / 0.196)
-
-    return 2 * (nO_t - (4 * np.pi * Rp**2 / (muO * gp)) * fO2term)
+    return partial_pressure_o2, mass_fraction_feo1_5, count, moles_feo1_5

@@ -6,10 +6,10 @@ from utils.get_flux import get_flux
 from utils.get_loss import get_loss
 
 from physics.tides import calculate_tidal_dissipation
-from TidalPy.conversions.conversions_x import semi_a2orbital_motion
+from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 
-def moODE3(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, Xi, FeOt,
-           Temp_K, P_Pa, tsat, FH2O, a, Mp, LStar, Rh, Mh, tides_on_flag):
+def moODE(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, Xi, FeOt,
+           Temp_K, P_Pa, tsat, FH2O, Mp, LStar, Rh, Mh, tides_on_flag):
     """ ODE when there is no magma ocean. Tectonic phase / last time phase. """
 
     # constants
@@ -89,7 +89,7 @@ def moODE3(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, 
 
     #######################################################################
     # atmospheric mass loss
-    phi_H, phi_O = get_loss(t_flux, Lbol, t, PO2, Patm, tsat, a, Mp, Rp, LStar)
+    phi_H, phi_O = get_loss(t_flux, Lbol, t, PO2, Patm, tsat, semi_a, Mp, Rp, LStar)
 
     #######################################################################
     # radioactive heat production

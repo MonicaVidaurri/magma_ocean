@@ -8,11 +8,11 @@ from utils.get_loss import get_loss
 import pandas as pd
 
 from physics.tides import calculate_tidal_dissipation
-from TidalPy.conversions.conversions_x import semi_a2orbital_motion
+from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 
 
-def moODEb(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, Xi, FeOt,
-           Temp_K, P_Pa, tsat, a, Mp, LStar, Rh, Mh, tides_on_flag):
+def moODE(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, Xi, FeOt,
+          Temp_K, P_Pa, tsat, Mp, LStar, Rh, Mh, tides_on_flag):
     """ First time phase; There is a magma ocean. Entire mantle is molten. """
     # ------------------------------------------------------------------
     # constants
@@ -126,7 +126,7 @@ def moODEb(t, Tr, Rp, Rc, Mmantle, Teq, rho, g, Ts, Ps, OLR, ASR, t_flux, Lbol, 
     # flux = get_flux(Tsurf, Patm, Rp, g)
 
     # atmospheric loss
-    phi_H, phi_O = get_loss(t_flux, Lbol, t, PO2, Patm, tsat, a, Mp, Rp, LStar)
+    phi_H, phi_O = get_loss(t_flux, Lbol, t, PO2, Patm, tsat, semi_a, Mp, Rp, LStar)
 
     # radioactive heating
     H_238U = 9.37e-5
