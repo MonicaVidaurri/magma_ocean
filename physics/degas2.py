@@ -106,11 +106,11 @@ def degas2(Tm, Db, qm, FH2O, Rp, g, Tsurf):
     r = Rp - z[I[0]:I[-1] + 1]
 
     meltfrac = (3.0 *
-                np.trapz(fraction[I[0]:I[-1] + 1] * r**2, r) /
+                np.trapezoid(fraction[I[0]:I[-1] + 1] * r**2, r) /
                 (r[-1]**3 - r[0]**3))
 
     avgXmelt = (3.0 *
-                np.trapz(Xmelt[I[0]:I[-1] + 1] * r**2, r) /
+                np.trapezoid(Xmelt[I[0]:I[-1] + 1] * r**2, r) /
                 (r[-1]**3 - r[0]**3))
 
     # numerical safety

@@ -153,7 +153,7 @@ phase1_ode = partial(
 sol1 = solve_ivp(phase1_ode, t_span=[1, 7.6e9], y0=Tr0, method='BDF', events=[mo_event])
 
 sol1 = monitor_ode(phase1_ode, t_span=[1, 7.6e9], y0=Tr0, phase_name='Phase 1', method='BDF', events=[mo_event])
-
+print("Stage 1 Success:", sol1.success)
 
 #########################################
 # Phase 2 - starting to solidify......
@@ -175,6 +175,7 @@ Tr0_2[1] += 1e-12 * Mmantle
 sol2 = solve_ivp(phase2_ode, t_span=[sol1.t[-1], 7.6e9], y0=Tr0_2, method='BDF', events=[mo_event2])
 
 sol2 = monitor_ode(phase2_ode, t_span=[sol1.t[-1], 7.6e9], y0=Tr0_2, phase_name='Phase 2', method='BDF', events=[mo_event2])
+print("Stage 2 Success:", sol1.success)
 
 #########################################
 # Phase 3 - mantle + plate tectonics + passive outgassing
@@ -194,6 +195,7 @@ phase3_ode = partial(
 sol3 = solve_ivp(phase3_ode, t_span=[sol2.t[-1], 7.6e9], y0=Tr0_3, method='BDF', events=[mo_event3])
 
 sol3 = monitor_ode(phase3_ode, t_span=[sol2.t[-1], 7.6e9], y0=Tr0_3, phase_name='Phase 3', method='BDF', events=[mo_event3])
+print("Stage 3 Success:", sol1.success)
 #==========================================================================
 
 

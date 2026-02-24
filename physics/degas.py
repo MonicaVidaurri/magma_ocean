@@ -124,10 +124,10 @@ def degas(Tm, Db, qm, FH2O, Rp, g, Tsurf):
     # averages over melt region
     if Dmelt > 0.0:
         if fourthz > 0:
-            product1 = np.trapz(y[firstz:fourthz+1] *
+            product1 = np.trapezoid(y[firstz:fourthz+1] *
                                  r[firstz:fourthz+1]**2,
                                  r[firstz:fourthz+1])
-            product2 = np.trapz(Xmelt[firstz:fourthz+1] *
+            product2 = np.trapezoid(Xmelt[firstz:fourthz+1] *
                                  r[firstz:fourthz+1]**2,
                                  r[firstz:fourthz+1])
 
@@ -138,10 +138,10 @@ def degas(Tm, Db, qm, FH2O, Rp, g, Tsurf):
             avgXmelt = 3.0 * product2 / denom
 
         else:
-            product1 = np.trapz(y[firstz:secondz+1] *
+            product1 = np.trapezoid(y[firstz:secondz+1] *
                                  r[firstz:secondz+1]**2,
                                  r[firstz:secondz+1])
-            product2 = np.trapz(Xmelt[firstz:secondz+1] *
+            product2 = np.trapezoid(Xmelt[firstz:secondz+1] *
                                  r[firstz:secondz+1]**2,
                                  r[firstz:secondz+1])
 
