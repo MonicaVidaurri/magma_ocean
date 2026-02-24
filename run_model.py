@@ -92,7 +92,7 @@ LStar = params['LStar'] * LSun  # stellar luminosity [Lsun]
 host_radius = 1.0 * 6.957e8
 
 # Integration parameters
-integration_method = 'RK45' # 'BDF'
+integration_method = 'BDF' # 'BDF'
 integration_rtol = 1.0e-4
 integration_atol = 1.0e-6
 
@@ -145,7 +145,7 @@ muFeO1_5 = 159.689e-3 / 2
 muFeO = 71.845e-3
 
 # Tide flag
-tides_on_flag = False
+tides_on_flag = True
 
 # Initial orbital and spin conditions
 # TODO: add these to params. Most are pulled from trappist1
@@ -175,6 +175,7 @@ Tr0[10] = Tr0[4] - 1  #initial surface temperature is equal to initial potential
 #########################################
 # Phase 1 - bigass ball of magma baby!!!!
 #########################################
+CRASH_IF_SOL_FAILS = False
 def monitor_ode(fun, t_span, y0, phase_name, **kwargs):
     """
     Wraps solve_ivp with a tqdm progress bar.
@@ -214,10 +215,11 @@ def monitor_ode(fun, t_span, y0, phase_name, **kwargs):
             pbar.n = pbar.total
             pbar.refresh()
 
-    if sol.success:
-        return sol
-    else:
+    if not sol.success and CRASH_IF_SOL_FAILS:
         raise Exception(f"Integration failed at t={sol.t[-1]} for {phase_name}: {sol.message}.")
+    return sol
+
+
 
 phase1_ode = partial(
     moODE_phase1, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho=rho, g=gp,
@@ -226,7 +228,6 @@ phase1_ode = partial(
     Rh=host_radius, Mh=MSun, tides_on_flag=tides_on_flag)
 
 sol1 = monitor_ode(phase1_ode, t_span=(start_time, end_time), y0=Tr0, phase_name='Phase 1', method=integration_method, events=[moEvent_phase1], rtol=integration_rtol, atol=integration_atol)
-
 
 #########################################
 # Phase 2 - starting to solidify......
