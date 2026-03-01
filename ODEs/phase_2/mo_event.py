@@ -1,4 +1,4 @@
-def moEvent(t, y, core_mass_fraction, planet_mass):
+def moEvent_phase2(t, y, core_mass_fraction, planet_mass):
     '''
     Phase 2.
     Stops when mantle water mass fraction < 1e-9
@@ -11,5 +11,5 @@ def moEvent(t, y, core_mass_fraction, planet_mass):
     # EVENT CONDITION
     return (water_mantle / Mmantle) - 1e-9
 
-moEvent.terminal = True
-moEvent.direction = -1
+moEvent_phase2.terminal = True
+moEvent_phase2.direction = -1

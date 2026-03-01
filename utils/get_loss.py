@@ -1,130 +1,156 @@
 import numpy as np
 
-def get_loss(t_flux, Lbol, t, PO2, PH2O, tsat, a, Mp, Rp, LStar, XUV_model=1):
-    '''
-    Calculate XUV-driven atmospheric escape fluxes of H and O.
+def get_loss(
+        t_flux_years,
+        Lbol_relative,
+        t_sec,
+        pressure_O2,
+        pressure_H2O,
+        t_sat_years,
+        semi_major_axis,
+        mass_planet,
+        radius_planet,
+        LStar_watts,
+        XUV_model=1):
+    """
+    Calculates the XUV-driven hydrodynamic atmospheric escape fluxes of Hydrogen 
+    and Oxygen, assuming a water-dominated upper atmosphere.
+
+    Uses a diffusion-limited escape model (e.g., Luger & Barnes) where Hydrogen 
+    drags Oxygen with it if the XUV flux is high enough.
 
     Parameters
     ----------
-    t_flux : ndarray
-        Time array for XUV flux evolution [yr]
-    Lbol : float or ndarray
-        Stellar bolometric luminosity (relative to LSun)
-    t : float
-        Current time [yr]
-    PO2 : float
-        O2 partial pressure [Pa]
-    PH2O : float
-        H2O partial pressure [Pa]
-    tsat : float
-        XUV saturation time [yr]
-    a : float
-        Semi-major axis of planet orbit [m]
-    MPlanet : float
-        Planet mass [kg]
-    rPlanet : float
-        Planet radius [m]
-    LStar : float
-        Stellar bolometric luminosity [W]
-    XUV_model : int
-        1 = high XUV
-        2 = low XUV
+    t_flux_years : ndarray
+        Time array corresponding to the stellar evolution tracks [years].
+    Lbol_relative : float or ndarray
+        Stellar bolometric luminosity relative to LSun.
+    t_sec : float
+        Current integration time [seconds].
+    pressure_O2 : float
+        Partial pressure of Oxygen in the atmosphere [Pa].
+    pressure_H2O : float
+        Partial pressure of Water Vapor in the atmosphere [Pa].
+    t_sat_years : float
+        XUV saturation time for the host star [years].
+    semi_major_axis : float
+        Semi-major axis of the planet's orbit [m].
+    mass_planet : float
+        Mass of the planet [kg].
+    radius_planet : float
+        Radius of the planet [m].
+    LStar_watts : float
+        Static stellar bolometric luminosity [W]. Used for equilibrium temperature.
+    XUV_model : int, optional
+        1 = Ribas+ 2005 continuous decay model.
+        2 = Saturation then immediate zero (cutoff model). Default is 1.
 
     Returns
     -------
-    phi_H : float
-        Mass flux of hydrogen [kg/m^2/s]
-    phi_O : float
-        Mass flux of oxygen [kg/m^2/s]
-    '''
+    flux_loss_H : float
+        Mass flux of hydrogen escaping to space [kg/m^2/s].
+    flux_loss_O : float
+        Mass flux of oxygen escaping to space [kg/m^2/s].
+    """
 
-    # Constants
-    G = 6.673e-11       # m^3/kg/s^2
-    sigma = 5.67e-8     # W/m2/K4
-    AU = 149597871e3    # m
-    NA = 6.022e23       # Avogadro
-    muH = 1.008
-    muO = 15.9994
-    mpr = 1.6726219e-27  # kg (proton mass)
+    # --- 0. Exhaustion Check ---
+    # If there is no water left in the atmosphere, hydrodynamic escape of H shuts off.
+    if pressure_H2O < 1e-6:
+        return 0.0, 0.0
 
-    # Stellar flux at planet
-    Fat1AU = LStar * 1366
-    F = Fat1AU * (AU / a)**2
-    A = 0.25  # albedo factor
-    g0 = G * Mp / Rp**2
-    ASR = (1 - A) * F / 4
-    Teq = (ASR / sigma)**0.25
+    # --- Constants & Time Conversion ---
+    G            = 6.6743e-11    # m^3/kg/s^2
+    stefan_boltz = 5.67e-8       # W/m2/K4
+    AU_meters    = 1.496e11      # m
+    avogadro     = 6.022e23      # molecules/mole
+    boltzmann    = 1.380649e-23  # J/K
+    mass_proton  = 1.6726e-27    # kg
 
-    # XUV fraction
-    f0 = 1e-3
-    beta = -1.23
-    eff = 0.1
+    molar_mass_H = 1.008    # g/mol
+    molar_mass_O = 15.9994  # g/mol
+    
+    sec_per_year = 3.15569e7
+    
+    # Convert input integration time (seconds) to years for stellar track interpolation
+    t_years = t_sec / sec_per_year
 
-    # Fractional XUV flux
-    f = f0 * (t_flux / tsat)**beta
+    # --- Planetary Parameters & Energy ---
+    gravity = G * mass_planet / radius_planet**2
+    albedo  = 0.25
+    
+    # Equilibrium Temperature (Escape Region Temperature Proxy)
+    flux_at_planet       = LStar_watts / (4.0 * np.pi * semi_major_axis**2)
+    absorbed_stellar_rad = (1.0 - albedo) * flux_at_planet / 4.0
+    temp_eq              = (absorbed_stellar_rad / stefan_boltz)**0.25
 
-############## ------old stuff------- #################
-    # if XUV_model == 1:
-    #     # Model A: Ribas+ 2005 decay
-    #     f = np.where(t_flux < tsat, f0, f)
-    #     L_XUV = f * Lbol * 3.846e26  # convert L☉ → W
-    # elif XUV_model == 2:
-    #     # Model B: Saturation then zero
-    #     f = np.where(t_flux < tsat, f0, 0.0)
-    #     #L_XUV = f * Lbol[-1] * 3.846e26 if hasattr(Lbol, '__len__') else f * Lbol * 3.846e26
-    #     L_XUV = f * 3.846e26 if hasattr(Lbol, '__len__') else f * Lbol * 3.846e26
-    # else:
-    #     raise ValueError('XUV_model must be 1 or 2')
-#######################################################
+    # --- XUV Flux Evolution ---
+    f_sat              = 1e-3
+    decay_beta         = -1.23
+    heating_efficiency = 0.1
+
+    # Fractional XUV luminosity relative to Lbol
+    f_xuv = f_sat * (t_flux_years / t_sat_years)**decay_beta
 
     if XUV_model == 1:
-        f = np.where(t_flux < tsat, f0, f)
+        # Ribas decay: flat during saturation, power-law decay after
+        f_xuv = np.where(t_flux_years < t_sat_years, f_sat, f_xuv)
     elif XUV_model == 2:
-        f = np.where(t_flux < tsat, f0, 0.0)
+        # Step function: flat during saturation, zero after
+        f_xuv = np.where(t_flux_years < t_sat_years, f_sat, 0.0)
 
-    L_XUV = f * Lbol * 3.846e26
-    F_XUV = L_XUV / (4 * np.pi * a**2)
+    # Convert relative Lbol back to Watts (3.828e26 is standard LSun)
+    luminosity_xuv_watts = f_xuv * Lbol_relative * 3.828e26
+    flux_xuv_orbit       = luminosity_xuv_watts / (4.0 * np.pi * semi_major_axis**2)
 
-    # Interpolate XUV flux at current time
-    if t > t_flux[0]:
-        Fxuv = np.interp(t, t_flux, F_XUV)
+    # Interpolate to current time using the converted t_years
+    if t_years > t_flux_years[0]:
+        current_Fxuv = np.interp(t_years, t_flux_years, flux_xuv_orbit)
     else:
-        Fxuv = F_XUV[0]
+        current_Fxuv = flux_xuv_orbit[0]
 
-    # Base mass escape rate
-    Vpot = G * Mp / Rp
-    phi = (eff * Fxuv / 4) / Vpot  # kg/m^2/s
+    # --- Hydrodynamic Escape (Energy-Limited Base) ---
+    grav_potential = G * mass_planet / radius_planet
+    
+    # Energy-limited mass flux (kg/m^2/s)
+    phi_energy_limited = (heating_efficiency * current_Fxuv / 4.0) / grav_potential 
 
-    # Escaping region parameters
-    Tesc = Teq
-    Phi1ref = phi / (muH * mpr)  # molecules/m^2/s
-    mu1 = muH
-    mu2 = muO
+    # --- Diffusion-Limited Escape (Hydrogen Dragging Oxygen) ---
+    temp_escape = temp_eq
+    
+    # Baseline molecule flux of H
+    phi_H_ref_molecules = phi_energy_limited / (molar_mass_H * mass_proton) 
 
-    # Molar fractions of H and O (assuming H2O)
-    X1 = 2/3
-    X2 = 1.0 - X1
+    # Molar fractions assuming a pure H2O source gas being dissociated
+    X_H = 2.0 / 3.0
+    X_O = 1.0 / 3.0
 
-    # Binary diffusion
-    b = 4.8e17 * (Tesc)**0.75 * 1e2
-    gam = 1 / (1 + X2 * mu2 / (X1 * mu1))
-    mu_c_ref = mu1 + (1.38064852e-23 * Tesc * Phi1ref) / (b * g0 * X1 * mpr)
-    mu_c = mu2 + gam * (mu_c_ref - mu2)
+    # Binary diffusion parameter (b)
+    binary_diff_coeff = 4.8e17 * (temp_escape)**0.75 * 100.0  # scaled to SI
 
-    # Fluxes
-    Phi1 = Phi1ref * (mu_c / mu_c_ref)
-    Phi2 = (X2 / X1) * Phi1 * ((mu_c - mu2) / (mu_c - mu1))
-    Phi2 = np.maximum(Phi2, 0.0)
+    gamma = 1.0 / (1.0 + X_O * molar_mass_O / (X_H * molar_mass_H))
+    
+    # Critical mass calculations for crossover
+    mu_c_ref = molar_mass_H + (boltzmann * temp_escape * phi_H_ref_molecules) / \
+        (binary_diff_coeff * gravity * X_H * mass_proton)
+    mu_c     = molar_mass_O + gamma * (mu_c_ref - molar_mass_O)
 
-    # Critical flux
-    Phi1crit = (b * g0 * X1 * mpr) * (mu2 - mu1) / (1.38064852e-23 * Tesc)
+    # Actual molecule fluxes
+    phi_H_molecules = phi_H_ref_molecules * (mu_c / mu_c_ref)
+    
+    # Oxygen is dragged if the flow is strong enough
+    phi_O_molecules = (X_O / X_H) * phi_H_molecules * ((mu_c - molar_mass_O) / (mu_c - molar_mass_H))
+    phi_O_molecules = max(phi_O_molecules, 0.0)
 
-    # Convert to kg/m^2/s
-    phi_H = Phi1 / NA * muH * 1e-3
-    #phi_O = Phi2 / NA * muO * 1e-3 if min(Phi1, Phi1crit) == Phi1crit else 0.0
-    if Phi1 >= Phi1crit:
-        phi_O = Phi2 / NA * muO * 1e-3
+    # Critical flux threshold for dragging Oxygen
+    phi_H_critical = (binary_diff_coeff * gravity * X_H * mass_proton) * (molar_mass_O - molar_mass_H) / (boltzmann * temp_escape)
+
+    # --- Convert to Mass Flux (kg/m^2/s) ---
+    # Convert from (molecules/m^2/s) -> (moles/m^2/s) -> (g/m^2/s) -> (kg/m^2/s)
+    flux_loss_H = (phi_H_molecules / avogadro) * molar_mass_H * 1e-3
+    
+    if phi_H_molecules >= phi_H_critical:
+        flux_loss_O = (phi_O_molecules / avogadro) * molar_mass_O * 1e-3
     else:
-        phi_O = 0.0
+        flux_loss_O = 0.0
 
-    return phi_H, phi_O
+    return flux_loss_H, flux_loss_O

@@ -1,4 +1,4 @@
-def moEvent(t, y):
+def moEvent_phase1(t, y):
     '''
     Check for the end of phase one (fully magma ocean world)
     Event is when the planet surface reaches the solidus temperature and therefore radius of solidification reaches
@@ -13,5 +13,5 @@ def moEvent(t, y):
 
 
 # Required by SciPy
-moEvent.terminal = True
-moEvent.direction = 0
+moEvent_phase1.terminal = True
+moEvent_phase1.direction = 0

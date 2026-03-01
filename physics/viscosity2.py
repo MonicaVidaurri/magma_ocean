@@ -1,59 +1,88 @@
 import numpy as np
 
-def viscosity2(temp, f_water, g, rho_m, P):
-    '''
-    Calculate mantle viscosity following Sandu et al. (2011).
+def viscosity2(
+        temp_mantle,
+        mass_frac_water,
+        gravity,
+        density_mantle,
+        pressure_pa):
+    """
+    Calculates the kinematic viscosity of the mantle incorporating water-weakening 
+    effects, following the parameterization of Sandu et al. (2011) and Li et al. (2008).
+
+    This model determines the concentration of hydroxyl (OH) defects in an olivine 
+    matrix, calculates the corresponding water fugacity, and applies it to an 
+    Arrhenius creep law.
 
     Parameters
     ----------
-    temp : float
-        Mantle temperature [K]
-    f_water : float
-        Mass fraction of water in the mantle
-    g : float
-        Surface gravity [m/s^2] (not used in current calculation)
-    rho_m : float
-        Mantle density [kg/m^3]
-    P : float
-        Pressure [Pa]
+    temp_mantle : float
+        The potential temperature of the mantle in Kelvin.
+    mass_frac_water : float
+        The bulk mass fraction of water in the mantle (dimensionless).
+    gravity : float
+        Surface gravitational acceleration in m/s^2. (Currently unused).
+    density_mantle : float
+        Bulk density of the mantle in kg/m^3.
+    pressure_pa : float
+        Local mantle pressure in Pascals.
 
     Returns
     -------
-    nu : float
-        Kinematic viscosity [m^2/s]
-    '''
-    # Olivine composition
-    forsterite = 0.9
-    fayalite = 0.1
-    mfor = 140.0e-3
-    mfay = 204.0e-3
-    mH2O = 18.02e-3
+    kinematic_viscosity : float
+        The kinematic viscosity of the mantle in m^2/s.
+    """
+    
+    # --- Constants & Molar Masses ---
+    gas_constant   = 8.31447    # J/(mol K)
+    molar_mass_H2O = 18.015e-3  # kg/mol
 
-    # Molecular weight of olivine solid solution
-    molv = forsterite * mfor + fayalite * mfay
+    # Olivine solid solution properties: (Mg,Fe)2SiO4
+    fraction_forsterite   = 0.9
+    fraction_fayalite     = 0.1
+    molar_mass_forsterite = 140.69e-3  # kg/mol
+    molar_mass_fayalite   = 203.78e-3  # kg/mol
 
-    # Convert mantle water mass fraction to number of H atoms per 10^6 Si atoms
-    C_OH = f_water * molv * 1e6 * 2 / mH2O
+    # Bulk molar mass of the idealized olivine mantle
+    molar_mass_olivine = (fraction_forsterite * molar_mass_forsterite + 
+                          fraction_fayalite * molar_mass_fayalite)
 
-    # Li et al. 2008 parameters to get water fugacity
+    # --- Water Concentration Conversion ---
+    # Numerical safety: Prevent log(0) crash if the mantle completely desiccates
+    mass_frac_water = max(mass_frac_water, 1e-12)
+
+    # Convert bulk water mass fraction to ppm H/Si (H atoms per 10^6 Si atoms)
+    # Assumes 1 mole of olivine contains exactly 1 mole of Si.
+    # Each H2O molecule contributes 2 H atoms.
+    concentration_OH = (mass_frac_water * molar_mass_olivine * 1e6 * 2.0) / molar_mass_H2O
+
+    # --- Water Fugacity (Li et al., 2008) ---
+    # Empirical polynomial fit linking OH concentration to water fugacity
     c0 = -7.9859
     c1 = 4.3559
     c2 = -0.5742
     c3 = 0.0337
 
-    logfH2O = c0 + c1 * np.log(C_OH) + c2 * (np.log(C_OH))**2 + c3 * (np.log(C_OH))**3
+    ln_C_OH = np.log(concentration_OH)
+    ln_fugacity_H2O = c0 + (c1 * ln_C_OH) + (c2 * ln_C_OH**2) + (c3 * ln_C_OH**3)
+    fugacity_H2O = np.exp(ln_fugacity_H2O)
 
-    # Viscosity parameters
-    eta_0 = 1.24e14  # Pa s, calibration constant
-    r = 1.0          # fugacity exponent
-    Qa = 335e3       # J/mol, activation energy
-    V = 0.0          # m^3/mol, activation volume (no pressure dependence)
-    R = 8.31447      # J/mol/K, ideal gas constant
+    # --- Dynamic Viscosity Calculation ---
+    # Rheological parameters for wet olivine dislocation creep (Sandu et al., 2011)
+    visc_reference    = 1.24e14  # eta_0 (Pa s), calibration constant
+    fugacity_exponent = 1.0      # r
+    activation_energy = 335e3    # Qa (J/mol)
+    
+    # Activation volume is set to 0.0, rendering pressure effects negligible in this regime
+    activation_volume = 0.0        # V (m^3/mol) 
 
-    # Dynamic viscosity
-    eta_eff = eta_0 * (np.exp(logfH2O))**(-r) * np.exp((Qa + P * V) / (R * temp))
+    # Arrhenius exponent
+    arrhenius_term = np.exp((activation_energy + pressure_pa * activation_volume) / (gas_constant * temp_mantle))
 
-    # Kinematic viscosity
-    nu = eta_eff / rho_m
+    # Dynamic viscosity (Pa s) incorporating the water fugacity weakening term
+    dynamic_viscosity = visc_reference * (fugacity_H2O**-fugacity_exponent) * arrhenius_term
 
-    return nu
+    # --- Kinematic Viscosity ---
+    kinematic_viscosity = dynamic_viscosity / density_mantle
+
+    return kinematic_viscosity

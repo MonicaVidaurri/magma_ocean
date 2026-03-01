@@ -1,39 +1,63 @@
-def get_heat_cap3(Tm, Mmantle, g, Rp, Rc, Mmo, dMs, get_meltfrac):
-    '''
-    get_heat_cap3.m
+def get_heat_cap3(
+        temp_mantle,
+        mass_mantle,
+        gravity,
+        radius_planet,
+        radius_core,
+        mass_magma_ocean,
+        dmass_solid_dt,
+        func_get_meltfrac):
+    """
+    Calculates the effective heat capacity (thermal inertia) of the mantle, 
+    incorporating both sensible heat and the latent heat of fusion released/absorbed 
+    during phase changes.
 
     Parameters
     ----------
-    Tm : float
-        Mantle temperature (K)
-    Mmantle : float
-        Mantle mass (kg)
-    g : float
-        Gravity (m/s^2)
-    Rp : float
-        Planet radius (m)
-    Rc : float
-        Core radius (m)
-    Mmo : float
-        Magma ocean mass (kg)
-    deltaMs : float
-        Change in melt mass (kg)
-    get_meltfrac : function
-        Function returning (unused, melt fraction) for given T
+    temp_mantle : float
+        Mantle potential temperature in Kelvin.
+    mass_mantle : float
+        Total mass of the mantle in kg.
+    gravity : float
+        Surface gravitational acceleration in m/s^2.
+    radius_planet : float
+        Radius of the planet in meters.
+    radius_core : float
+        Radius of the planetary core in meters.
+    mass_magma_ocean : float
+        Mass of the active magma ocean (liquid + suspended crystals) in kg.
+    dmass_solid_dt : float
+        The derivative of solid mass with respect to temperature (dMs/dT). 
+        Must have units of kg/K.
+    func_get_meltfrac : callable
+        Function to compute the melt fraction given (gravity, temp, Rp, Rc, Mass).
 
     Returns
     -------
-    Cp : float
-        Mantle heat capacity (J/K)
-    '''
+    effective_heat_capacity : float
+        The total effective heat capacity of the mantle in J/K.
+    """
 
-    cp_kg = 1.2e3     # J/kg/K
-    deltaH_kg = 4e5   # J/kg latent heat per kg
+    # --- Thermodynamic Constants ---
+    specific_heat_mantle = 1.2e3  # cp (J/kg/K)
+    latent_heat_fusion   = 4.0e5    # deltaH (J/kg)
 
-    # call get_meltfrac to... you guessed it... get melt fraction
-    _, meltfrac = get_meltfrac(g, Tm, Rp, Rc, Mmantle)
+    # --- Melt Fraction Calculation ---
+    # The get_meltfrac function returns (exchange_pressure, volume_melt_fraction)
+    _, volume_melt_fraction = func_get_meltfrac(gravity, temp_mantle, radius_planet, radius_core, mass_mantle)
 
-    # calculate heat capacity
-    Cp = cp_kg * meltfrac * Mmo + deltaH_kg * dMs  # Joules/K for entire mantle
+    # --- Effective Heat Capacity Calculation ---
+    # Sensible Heat Capacity (J/K):
+    # The entire mantle (both solid and liquid) must change temperature, 
+    # so we use the total mass of the mantle, not just the liquid fraction.
+    sensible_heat_capacity = specific_heat_mantle * mass_mantle
 
-    return Cp
+    # Latent Heat Capacity (J/K):
+    # Energy absorbed/released as the mass changes phase per degree Kelvin.
+    # Note: dmass_solid_dt (dMs/dT) is typically negative as the planet cools.
+    latent_heat_capacity = latent_heat_fusion * dmass_solid_dt
+
+    # Total Effective Thermal Inertia
+    effective_heat_capacity = sensible_heat_capacity + latent_heat_capacity
+
+    return effective_heat_capacity

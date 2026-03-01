@@ -99,17 +99,17 @@ def calculate_tidal_dissipation(
             de_dt_scale=1.,
             dspin_dt_scale=1.
             )
-        da_dt = dissipation_results['semi_major_axis_derivative']
-        de_dt = dissipation_results['eccentricity_derivative']
-        dspin_dt_h = dissipation_results['host']['spin_rate_derivative']
-        dspin_dt_p = dissipation_results['secondary']['spin_rate_derivative']
+        da_dt           = dissipation_results['semi_major_axis_derivative']
+        de_dt           = dissipation_results['eccentricity_derivative']
+        dspin_dt_h      = dissipation_results['host']['spin_rate_derivative']
+        dspin_dt_p      = dissipation_results['secondary']['spin_rate_derivative']
         tidal_heating_h = dissipation_results['host']['tidal_heating']
-        tidal_heating_p = dissipation_results['host']['tidal_heating']
+        tidal_heating_p = dissipation_results['secondary']['tidal_heating']
     else:
-        da_dt = 0.0
-        de_dt = 0.0
-        dspin_dt_h = 0.0
-        dspin_dt_p = 0.0
+        da_dt           = 0.0
+        de_dt           = 0.0
+        dspin_dt_h      = 0.0
+        dspin_dt_p      = 0.0
         tidal_heating_h = 0.0
         tidal_heating_p = 0.0
     

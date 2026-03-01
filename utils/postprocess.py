@@ -1,93 +1,205 @@
 import numpy as np
-from utils import get_meltfrac, get_pressure2, get_massbalance4, get_fO2, get_loss, get_flux
 
+# Assuming these are properly imported from your physics/utils modules
+from utils.get_meltfrac import get_meltfrac
+from utils.get_pressure2 import get_pressure2
+from utils.get_massbalance4 import get_massbalance4
+from utils.get_fO2 import get_fO2
+from utils.get_loss import get_loss
+from utils.get_flux import get_flux
 
-def postprocess_magma_ocean(sol1, sol2, sol3, Rp, Rc, Mmantle, gp, OLR_interp, ASR, Teq, Xi, FeOt, t_flux, Lbol, tsat,
-                            a, Mp, LStar):
-    #########################################
-    # Phase 1
-    t1 = sol1.t
-    Tr1 = sol1.y #mantle temperature
-    n1 = Tr1.shape[1]
+def postprocess_magma_ocean(
+        sol1,
+        sol2,
+        sol3,
+        Rp,
+        Rc,
+        Mmantle,
+        gp,
+        OLR_interp,
+        ASR,
+        Teq,
+        Xi,
+        FeOt,
+        t_flux,
+        Lbol,
+        tsat,
+        a,
+        Mp,
+        LStar):
+    """
+    Post-processes the raw ODE solver outputs to reconstruct derived physical 
+    variables (pressures, melt fractions, fluxes) that were not explicitly 
+    saved in the state vectors.
 
-    Mmo = np.zeros(n1) #Mass of mantle
-    Wmo = np.zeros(n1) #Water content in mantle
+    Parameters
+    ----------
+    sol1, sol2, sol3 : scipy.integrate.OdeResult
+        Solver output objects for Phase 1, Phase 2, and Phase 3 respectively.
+    Rp, Rc : float
+        Radius of planet and radius of core in meters.
+    Mmantle : float
+        Mass of the mantle in kg.
+    gp : float
+        Surface gravity in m/s^2.
+    OLR_interp, ASR, Teq : float/interpolators
+        Radiative variables.
+    Xi : ndarray
+        1D array of initial oxide mole fractions.
+    FeOt : float
+        Bulk mass fraction of total iron.
+    t_flux, Lbol : ndarray
+        Stellar evolution tracks (time in years, luminosity relative to Sun).
+    tsat : float
+        XUV saturation time in years.
+    a : float
+        Semi-major axis in meters.
+    Mp, LStar : float
+        Planet mass (kg) and Stellar luminosity (Watts).
+
+    Returns
+    -------
+    results : dict
+        Nested dictionary containing time arrays, state vectors, and derived 
+        atmospheric/magma properties for all three phases.
+    """
+    
+    # --- Constants & Geometry ---
+    sec_per_year   = 3.15569e7
+    surface_area   = 4.0 * np.pi * Rp**2
+    molar_mass_O   = 15.9994e-3
+    molar_mass_H2O = 18.015e-3
+    molar_mass_FeO = 71.845e-3
+    
+    volume_mantle = (4.0 / 3.0) * np.pi * (Rp**3 - Rc**3)
+    rho_mantle    = Mmantle / volume_mantle
+
+    # =====================================================================
+    # --- PHASE 1: Magma Ocean ---
+    # =====================================================================
+    t1_sec = sol1.t
+    Tr1    = sol1.y
+    n1     = Tr1.shape[1]
+
+    # Initialize derived arrays
+    Mmo      = np.zeros(n1)
+    Wmo      = np.zeros(n1)
     meltfrac = np.zeros(n1)
-    Patm = np.zeros(n1) #Atm pressure
+    Patm     = np.zeros(n1)
     FH2O_arr = np.zeros(n1)
     kH2O_arr = np.zeros(n1)
     flux_arr = np.zeros(n1)
-    PO2 = np.zeros(n1)  #O2 partial pressure
-    FFeO1_5 = np.zeros(n1)
-    nFeO1_5 = np.zeros(n1)
-    nFeOt = np.zeros(n1)
-    fo2 = np.zeros(n1) #oxygen fugacity
-    phi_H = np.zeros(n1)
-    phi_O = np.zeros(n1)
+    PO2      = np.zeros(n1)
+    FFeO1_5  = np.zeros(n1)
+    nFeO1_5  = np.zeros(n1)
+    nFeOt    = np.zeros(n1)
+    fo2      = np.zeros(n1)
+    phi_H    = np.zeros(n1)
+    phi_O    = np.zeros(n1)
 
     for i in range(n1):
-        Tm = Tr1[4, i]
-        r_solid = Tr1[5, i]
-        Wmo[i] = Tr1[7, i]
-        Mmo[i] = 4 / 3 * np.pi * (Rp ** 3 - r_solid ** 3) * (Mmantle / (4 / 3 * np.pi * (Rp ** 3 - Rc ** 3)))
+        temp_mantle = Tr1[4, i]
+        radius_solid = Tr1[5, i]
+        
+        # Protect against numerical undershoot
+        Wmo[i] = max(Tr1[7, i], 0.0) 
+        
+        # Mass of active magma ocean
+        Mmo[i] = (4.0 / 3.0) * np.pi * (Rp**3 - radius_solid**3) * rho_mantle
 
-        if Wmo[i] < 0: Wmo[i] = 0.0
+        # Melt Fraction
+        _, meltfrac[i] = get_meltfrac(gp, temp_mantle, Rp, Rc, Mmantle)
 
-        _, meltfrac[i] = get_meltfrac.get_meltfrac(gp, Tm, Rp, Rc, Mmantle)
-
-        if Wmo[i] > 0:
-            Patm[i], FH2O_arr[i], kH2O_arr[i] = get_pressure2.get_pressure2(Tr1[4, i], Tr1[5, i], Mmo[i],
-                                                              Mmantle, Rp, gp, Rc, Wmo[i])
+        # Water Partitioning (Pressure)
+        if Wmo[i] > 0.0:
+            Patm[i], FH2O_arr[i], kH2O_arr[i] = get_pressure2(
+                temp_mantle, radius_solid, Mmo[i], Mmantle, Rp, gp, Rc, Wmo[i]
+            )
         else:
             Patm[i] = 0.0
-            FH2O_arr[i] = 0.0
-            kH2O_arr[i] = 0.0
 
-        flux_arr[i] = get_flux.get_flux(Tr1[10, i], Teq, Patm[i], Rp, gp)
+        # Radiative Flux
+        temp_surface = Tr1[10, i]
+        flux_arr[i]  = get_flux(temp_surface, Teq, Patm[i], Rp, gp)
 
-        MO_mo = Tr1[8, i]
-        if MO_mo > 0.0:
-            PO2[i], FFeO1_5[i], _, nFeO1_5[i] = get_massbalance4.get_massbalance4(Tr1[4, i], Patm[i], Mmo[i],
-                                                                 MO_mo, Xi, FeOt, gp, Rp)
-            if PO2[i] < 0:
-                PO2[i] = MO_mo * gp / (4 * np.pi * Rp ** 2)
+        # Oxygen Partitioning
+        mass_oxygen_mo_atm = Tr1[8, i]
+        if mass_oxygen_mo_atm > 0.0:
+            PO2[i], FFeO1_5[i], _, nFeO1_5[i] = get_massbalance4(
+                temp_mantle, Patm[i], Mmo[i], mass_oxygen_mo_atm, Xi, FeOt, gp, Rp
+            )
+            # Failsafe if oxygen is entirely in the atmosphere
+            if PO2[i] <= 0.0:
+                PO2[i] = mass_oxygen_mo_atm * gp / surface_area
                 FFeO1_5[i] = 0.0
                 nFeO1_5[i] = 0.0
         else:
             PO2[i] = 0.0
-            FFeO1_5[i] = 0.0
-            nFeO1_5[i] = 0.0
 
-        nFeOt[i] = FeOt * Mmo[i] / 71.845e-3
-        fo2[i] = get_fO2.get_fO2(Tr1[4, i], Patm[i], np.concatenate([Xi[:10], [nFeOt[i] - nFeO1_5[i]], [nFeO1_5[i]]]))
-        phi_H[i], phi_O[i] = get_loss.get_loss(t_flux, Lbol, t1[i], PO2[i], Patm[i], tsat, a, Mp, Rp, LStar)
+        # Oxygen Fugacity
+        nFeOt[i] = (FeOt * Mmo[i]) / molar_mass_FeO
+        moles_FeO = max(nFeOt[i] - nFeO1_5[i], 0.0)
+        
+        # Build exact 12-element array expected by get_fO2
+        modified_Xi = np.concatenate([Xi[:10], [moles_FeO, nFeO1_5[i]]])
+        fo2[i] = get_fO2(temp_mantle, Patm[i], modified_Xi)
 
-    H2Olost = (Tr1[6, :] + Tr1[7, :])[0] - (Tr1[6, :] + Tr1[7, :])
-    Ogained = H2Olost * 15.9994e-3 / 18.015e-3
-    totalO = Tr1[8, 0] + Ogained
+        # Atmospheric Escape
+        phi_H[i], phi_O[i] = get_loss(t_flux, Lbol, t1_sec[i], PO2[i], Patm[i], tsat, a, Mp, Rp, LStar)
 
-    #########################################
-    # Phase 2
-    t2 = sol2.t
-    Tr2 = sol2.y
-    n2 = Tr2.shape[1]
-    PO2_2 = Tr2[7, :] * gp / (4 * np.pi * Rp ** 2)
-    Patm_2 = Tr2[6, :] * gp / (4 * np.pi * Rp ** 2)
+    # --- Phase 1 Global Balances ---
+    # Total water = Solid Water (Tr1[6]) + Magma/Atm Water (Tr1[7])
+    total_water = Tr1[6, :] + Tr1[7, :]
+    H2O_lost_kg = total_water[0] - total_water
+    
+    # Stoichiometric oxygen left behind by H2O photolysis
+    O_gained_kg = H2O_lost_kg * (molar_mass_O / molar_mass_H2O)
+    
+    # Theoretical O inventory (ignores O lost to space)
+    theoretical_total_O = Tr1[8, 0] + O_gained_kg
+    
+    # Actual O inventory (Atmosphere/Magma Tr[8] + Solid Tr[9])
+    actual_total_O = Tr1[8, :] + Tr1[9, :]
 
-    # Phase 3
-    t3 = sol3.t
-    Tr3 = sol3.y
-    n3 = Tr3.shape[1]
-    PO2_3 = Tr3[6, :] * gp / (4 * np.pi * Rp ** 2)
-    Patm_3 = Tr3[5, :] * gp / (4 * np.pi * Rp ** 2)
 
+    # =====================================================================
+    # --- PHASE 2: Solidification / Degassing ---
+    # =====================================================================
+    t2_sec = sol2.t
+    Tr2    = sol2.y
+    
+    # In Phase 2: Tr2[6] is atm water, Tr2[7] is atm oxygen
+    Patm_2 = Tr2[6, :] * gp / surface_area
+    PO2_2  = Tr2[7, :] * gp / surface_area
+
+
+    # =====================================================================
+    # --- PHASE 3: Tectonic Steady-State ---
+    # =====================================================================
+    t3_sec = sol3.t
+    Tr3    = sol3.y
+    
+    # In Phase 3: Tr3[5] is atm water, Tr3[6] is atm oxygen
+    Patm_3 = Tr3[5, :] * gp / surface_area
+    PO2_3  = Tr3[6, :] * gp / surface_area
+
+
+    # =====================================================================
+    # --- Compilation & Return ---
+    # =====================================================================
     return {
-        'phase1': {'t': t1, 'Tr': Tr1, 'Mmo': Mmo, 'Wmo': Wmo, 'meltfrac': meltfrac,
-                   'Patm': Patm, 'FH2O': FH2O_arr, 'kH2O': kH2O_arr, 'flux': flux_arr,
-                   'PO2': PO2, 'FFeO1_5': FFeO1_5, 'nFeO1_5': nFeO1_5,
-                   'nFeOt': nFeOt, 'fo2': fo2, 'phi_H': phi_H, 'phi_O': phi_O,
-                   'H2Olost': H2Olost, 'Ogained': Ogained, 'totalO': totalO},
-        'phase2': {'t': t2, 'Tr': Tr2, 'PO2': PO2_2, 'Patm': Patm_2},
-        'phase3': {'t': t3, 'Tr': Tr3, 'PO2': PO2_3, 'Patm': Patm_3}
+        'phase1': {
+            't': t1_sec, 'Tr': Tr1, 'Mmo': Mmo, 'Wmo': Wmo, 'meltfrac': meltfrac,
+            'Patm': Patm, 'FH2O': FH2O_arr, 'kH2O': kH2O_arr, 'flux': flux_arr,
+            'PO2': PO2, 'FFeO1_5': FFeO1_5, 'nFeO1_5': nFeO1_5, 'nFeOt': nFeOt, 
+            'fo2': fo2, 'phi_H': phi_H, 'phi_O': phi_O, 'H2Olost': H2O_lost_kg, 
+            'Ogained': O_gained_kg, 'totalO_theoretical': theoretical_total_O,
+            'totalO_actual': actual_total_O
+        },
+        'phase2': {
+            't': t2_sec, 'Tr': Tr2, 'PO2': PO2_2, 'Patm': Patm_2
+        },
+        'phase3': {
+            't': t3_sec, 'Tr': Tr3, 'PO2': PO2_3, 'Patm': Patm_3
+        }
     }
-

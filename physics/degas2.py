@@ -1,128 +1,140 @@
 import numpy as np
 
-def degas2(Tm, Db, qm, FH2O, Rp, g, Tsurf):
-    '''
-    degas2.m
+def degas2(temp_mantle_potential, depth_boundary_layer, heat_flux_mantle, 
+           mass_frac_water_bulk, radius_planet, gravity, temp_surface):
+    """
+    Calculates the mantle degassing rate and melt zone properties based on 
+    a 1D interior temperature profile and pressure-dependent solidus.
 
     Parameters
     ----------
-    Tm : float
-        Mantle potential temperature (K)
-    Db : float
-        Boundary layer thickness (m)
-    qm : float
-        Heat flux (W/m^2)
-    FH2O : float
-        Bulk water mass fraction
-    Rp : float
-        Planetary radius (m)
-    g : float
-        Gravity (m/s^2)
-    Tsurf : float
-        Surface temperature (K)
+    temp_mantle_potential : float
+        The potential temperature of the convective mantle in Kelvin.
+    depth_boundary_layer : float
+        The thickness of the conductive lithospheric boundary layer in meters.
+    heat_flux_mantle : float
+        The upward heat flux from the mantle in W/m^2.
+    mass_frac_water_bulk : float
+        The bulk mass fraction of water in the solid mantle (dimensionless).
+    radius_planet : float
+        The radius of the planet in meters.
+    gravity : float
+        The surface gravitational acceleration in m/s^2.
+    temp_surface : float
+        The surface temperature of the planet in Kelvin.
 
     Returns
     -------
-    Dmelt : float
-        Melt layer thickness (m)
-    rmor : float
-        Degassing rate proxy
-    meltfrac : float
-        Volume-averaged melt fraction
-    avgXmelt : float
-        Volume-averaged water fraction in melt
-    '''
+    thickness_melt_layer : float
+        The total vertical thickness of all actively melting layers in meters.
+    degassing_rate_proxy : float
+        A proxy for the degassing rate, representing the mass of volatiles 
+        released per unit volume of the melt region (kg/m^3).
+    avg_melt_fraction : float
+        The volume-averaged melt fraction across all melting zones.
+    avg_water_in_melt : float
+        The volume-averaged mass fraction of water partitioned into the melt phase.
+    """
+    
+    # --- Constants & Partitioning ---
+    partition_coeff_water = 0.01   # D_H2O
+    density_mantle        = 3.3e3  # rho_m (kg/m^3)
+    thermal_expansion     = 2e-5   # alpha (1/K)
+    heat_capacity         = 1.2e3  # cp (J/kg/K)
+    thermal_conductivity  = 4.2    # km (W/m/K)
 
-    # bulk distribution coefficient
-    D_H2O = 0.01
+    # --- Vectorized Depth & Pressure Grid ---
+    depths = np.arange(0.0, 300e3 + 1e3, 1e3)
+    
+    # Sanity Check: Ensure we don't calculate deeper than the planet's center
+    depths = depths[depths < radius_planet]
+    
+    pressures_pa  = density_mantle * gravity * depths
+    pressures_gpa = pressures_pa / 1e9
 
-    # physical constants
-    rho_m = 3.3e3
-    alpha = 2e-5
-    cp = 1.2e3
-    chi_d = 1.0
-    km = 4.2
+    # --- Thermodynamics (Solidus & Liquidus) ---
+    temp_solidus = np.minimum(104.42 * pressures_gpa + 1420.0,
+                              26.53 * pressures_gpa + 1825.0)
+    temp_liquidus = temp_solidus + 600.0
 
-    # depth grid (m)
-    z = np.arange(0.0, 300e3 + 1e3, 1e3)
-    nz = len(z)
+    # Conductive profile (Crust) vs Adiabatic profile (Deep Mantle)
+    temp_conductive = temp_surface + depths * heat_flux_mantle / thermal_conductivity
+    temp_adiabatic  = temp_mantle_potential + temp_mantle_potential * (thermal_expansion * gravity * depths / heat_capacity)
+    
+    # Stitch them together at the boundary layer
+    temp_profile = np.where(depths < depth_boundary_layer, temp_conductive, temp_adiabatic)
 
-    # initialize arrays
-    Tadiabat = np.zeros(nz)
-    fraction = np.zeros(nz)
-    Xmelt = np.zeros(nz)
+    # --- Melt Fraction & Water Partitioning ---
+    # Calculate melt fraction (0.0 to 1.0)
+    melt_fraction = (temp_profile - temp_solidus) / (temp_liquidus - temp_solidus)
+    melt_fraction = np.clip(melt_fraction, 0.0, 1.0)
+    
+    # Strict thermodynamic bounds
+    melt_fraction[temp_profile < temp_solidus] = 0.0
+    melt_fraction[temp_profile >= temp_liquidus] = 1.0
 
-    # pressure in GPa
-    press = rho_m * g * z / 1e9
+    # Calculate water concentrated in the melt (Batch Melting)
+    water_in_melt   = np.zeros_like(depths)
+    melting_indices = melt_fraction > 0.0
+    
+    if np.any(melting_indices):
+        # Above liquidus (melt fraction == 1.0), all water is in the melt
+        water_in_melt[melting_indices] = mass_frac_water_bulk / (
+            partition_coeff_water + melt_fraction[melting_indices] * (1.0 - partition_coeff_water)
+        )
 
-    # solidus and liquidus
-    Tsolidus = np.minimum(104.42 * press + 1420.0,
-                           26.53 * press + 1825.0)
-    Tliquidus = Tsolidus + 600.0
+    # --- Robust Integration of Melt Zones ---
+    # Find all distinct, contiguous zones of melting
+    idx_melt = np.where(melting_indices)[0]
+    
+    if len(idx_melt) < 2:
+        return 0.0, 0.0, 0.0, 0.0
 
-    # temperature profile
-    Tadiabat[0] = Tsurf
-    Tp = Tm
+    # Split into contiguous blocks (handles solid gaps between melt zones)
+    step_diffs   = np.diff(idx_melt)
+    split_points = np.where(step_diffs > 1)[0] + 1
+    melt_blocks  = np.split(idx_melt, split_points)
 
-    for i in range(1, nz):
-        if z[i] < Db:
-            Tadiabat[i] = Tadiabat[0] + z[i] * qm / km
-        else:
-            Tadiabat[i] = Tp + Tp * (alpha * g * z[i] / cp)
+    radii = radius_planet - depths
+    
+    thickness_melt_layer = 0.0
+    total_volume_proxy   = 0.0
+    integral_f_melt      = 0.0
+    integral_X_melt      = 0.0
 
-    # melt fraction and water partitioning
-    for i in range(nz):
-        if Tadiabat[i] > Tliquidus[i]:
-            fraction[i] = 1.0
-            Xmelt[i] = FH2O
+    for block in melt_blocks:
+        # Ignore single-point melt spikes (un-integratable)
+        if len(block) < 2:
+            continue
+            
+        i_start, i_end = block[0], block[-1]
+        
+        # Accumulate total thickness
+        thickness_melt_layer += (depths[i_end] - depths[i_start])
+        
+        # Exact geometric volume of this spherical shell (divided by 4/3 pi)
+        # Note: top is smaller depth = larger radius
+        vol_shell = radii[i_start]**3 - radii[i_end]**3
+        total_volume_proxy += vol_shell
+        
+        # Extract blocks for integration
+        z_block = depths[i_start:i_end+1]
+        r_block = radii[i_start:i_end+1]
+        f_block = melt_fraction[i_start:i_end+1]
+        X_block = water_in_melt[i_start:i_end+1]
+        
+        # Integrate over depth (dz is strictly positive)
+        integral_f_melt += np.trapezoid(f_block * r_block**2, z_block)
+        integral_X_melt += np.trapezoid(X_block * r_block**2, z_block)
 
-        elif Tadiabat[i] > Tsolidus[i]:
-            fraction[i] = ((Tadiabat[i] - Tsolidus[i]) /
-                           (Tliquidus[i] - Tsolidus[i]))
-            Xmelt[i] = FH2O / (D_H2O + fraction[i] * (1.0 - D_H2O))
+    # --- Final Averages ---
+    if total_volume_proxy == 0.0:
+        return 0.0, 0.0, 0.0, 0.0
 
-        else:
-            fraction[i] = 0.0
-            Xmelt[i] = 0.0
+    avg_melt_fraction = 3.0 * integral_f_melt / total_volume_proxy
+    avg_water_in_melt = 3.0 * integral_X_melt / total_volume_proxy
 
-    # indices of molten region
-    I = np.where(fraction > 0.0)[0]
+    # Degassing rate proxy (kg/m^3)
+    degassing_rate_proxy = avg_melt_fraction * avg_water_in_melt * density_mantle
 
-    # no melt case
-    if I.size < 2:
-        meltfrac = 0.0
-        avgXmelt = 0.0
-        Dmelt = 0.0
-        rmor = 0.0
-        return Dmelt, rmor, meltfrac, avgXmelt
-
-    # base of magma ocean pressure (kept for completeness)
-    if I[-1] < nz - 1:
-        exchangeP = press[I[-1] + 1]
-    else:
-        exchangeP = press[I[-1]]
-
-    # volume-averaged melt and water fraction
-    r = Rp - z[I[0]:I[-1] + 1]
-
-    meltfrac = (3.0 *
-                np.trapz(fraction[I[0]:I[-1] + 1] * r**2, r) /
-                (r[-1]**3 - r[0]**3))
-
-    avgXmelt = (3.0 *
-                np.trapz(Xmelt[I[0]:I[-1] + 1] * r**2, r) /
-                (r[-1]**3 - r[0]**3))
-
-    # numerical safety
-    if meltfrac > 1.0:
-        meltfrac = 1.0
-
-    Dmelt = z[I[-1]] - z[I[0]]
-
-    # degassing proxy
-    if Dmelt > 0.0:
-        rmor = meltfrac * avgXmelt * rho_m
-    else:
-        rmor = 0.0
-
-    return Dmelt, rmor, meltfrac, avgXmelt
+    return thickness_melt_layer, degassing_rate_proxy, avg_melt_fraction, avg_water_in_melt

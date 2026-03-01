@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def moEvent(t, y):
+def moEvent_phase3(t, y):
     '''
     Phase 3.
     Stops when degassing stops
@@ -14,5 +14,5 @@ def moEvent(t, y):
 
 
 # Required by SciPy
-moEvent.terminal = True
-moEvent.direction = 0
+moEvent_phase3.terminal = True
+moEvent_phase3.direction = 0
