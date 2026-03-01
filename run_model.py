@@ -97,8 +97,8 @@ host_radius = 1.0 * 6.957e8
 
 # --- Integration parameters (Now strictly in Seconds) ---
 integration_method = 'BDF' 
-integration_rtol = 1.0e-8
-integration_atol = 1.0e-12
+integration_rtol = 1.0e-4
+integration_atol = 1.0e-6
 
 if integration_method.lower() not in ('rk23', 'rk45', 'dop853'):
     # CyRK only supports RK-like methods.

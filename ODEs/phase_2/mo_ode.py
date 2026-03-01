@@ -9,35 +9,29 @@ from physics.tides import calculate_tidal_dissipation
 from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 
 def moODE_phase2(
-        t_sec, Tr, Rp, Rc, Mmantle, Teq, rho_mantle, g, 
-        t_flux, Lbol, tsat, Mp, LStar, Rh, Mh, 
-        params, tides_on_flag
+        t_sec, Tr, Rp, Rc, Mmantle, Teq, rho_mantle, g, Ts, Ps, OLR, ASR, 
+        t_flux, Lbol, Xi, FeOt, Temp_K, P_Pa, tsat, Mp, LStar, Rh, Mh, 
+        tides_on_flag
     ):
-    """ 
-    Phase 2: Solid-state mantle evolution and volcanic degassing. 
-    Driven by the master 'params' dictionary.
-    """
+    """ Second phase. Solidification complete, sub-solidus mantle degassing begins. """
 
-    # --- Unpack Constants from TOML ---
-    univ = params['constants']
-    mat  = params['planet']['material']
-    atm_params = params['planet']['atmosphere']
-    thermo = params['planet']['thermodynamics']
+    # =====================================================================
+    # --- Constants & Molar Masses ---
+    # =====================================================================
+    molar_mass_O   = 15.9994e-3
+    molar_mass_H2O = 18.015e-3
+    molar_mass_H   = 1.008e-3
 
-    mu_O    = univ['molar_mass_O']
-    mu_H2O  = univ['molar_mass_h2o']
-    mu_H    = univ['molar_mass_H']
+    heat_capacity_mantle = 1.2e3
+    heat_capacity_water  = 2e3
+    density_crust        = 3000.0
+    crit_temp_water      = 647.0
     
-    cp_mantle = mat['specific_heat_mantle']
-    cp_water  = mat['specific_heat_h2o']
-    
-    crit_temp_water = atm_params['water_critical_temp']
-    vp_A = atm_params['vapor_press_A']
-    vp_B = atm_params['vapor_press_B']
-
     surface_area = 4.0 * np.pi * Rp**2
 
+    # =====================================================================
     # --- Unpack State Vector ---
+    # =====================================================================
     dTr_dt = np.zeros(9, dtype=np.float64)
     
     semi_a       = Tr[0]
@@ -52,81 +46,91 @@ def moODE_phase2(
     mass_oxygen_atm       = max(Tr[7], 0.0)
     temp_surface          = Tr[8]
 
-    # --- Mantle Melt Fraction ---
-    # Solidus check using TOML intercept
-    if temp_mantle > thermo['solidus_intercept_low_p']:
-        _, meltfrac = get_meltfracb(g, temp_mantle, Rp, Rc, Mmantle, params) 
+    # =====================================================================
+    # --- Mantle Melt Fraction & Properties ---
+    # =====================================================================
+    if temp_mantle > 1420:
+        _, meltfrac = get_meltfracb(g, temp_mantle, Rp, Rc, Mmantle) 
     else:
         meltfrac = 0.0
 
-    # --- Atmospheric Pressures & Condensation ---
+    # =====================================================================
+    # --- Atmospheric Pressures ---
+    # =====================================================================
     if temp_surface > crit_temp_water:
-        # Steam atmosphere: all water is vapor
         pressure_atm = mass_water_atm * g / surface_area
     else:
-        # Liquid water present: vapor pressure limited by temp
-        pressure_atm = 10**(vp_A - vp_B / temp_surface) * 1e5
-        # Safety: cannot have more vapor than total water
-        pressure_atm = min(pressure_atm, mass_water_atm * g / surface_area)
+        pressure_atm = 10 ** (6.079 - 2261.10 / temp_surface) * 1e5
+        if (pressure_atm * surface_area / g) > mass_water_atm:
+            pressure_atm = mass_water_atm * g / surface_area
 
     pressure_O2 = mass_oxygen_atm * g / surface_area
 
+    # =====================================================================
     # --- Energy Fluxes & Loss Rates ---
-    flux_space = get_flux(temp_surface, Teq, pressure_atm, Rp, g, params)
+    # =====================================================================
+    flux_to_space = get_flux(temp_surface, Teq, pressure_atm, Rp, g)
     
-    f_loss_H, f_loss_O = get_loss(
-        t_flux, Lbol, t_sec, pressure_O2, pressure_atm, tsat, semi_a, Mp, Rp, LStar, params
+    flux_loss_H, flux_loss_O = get_loss(
+        t_flux, Lbol, t_sec, pressure_O2, pressure_atm, tsat, semi_a, Mp, Rp, LStar
     )
     
-    Q_radio = get_radiogenic_heat(t_sec, Mmantle, params)
+    radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle)
 
-    # Use mantleheatflux (Db = boundary layer depth, uc = convective velocity)
-    q_mantle, Db, uc, _, nu = mantleheatflux(
-        temp_mantle, temp_surface, Rp, Rp, Rc, g, rho_mantle, mass_frac_water_solid, meltfrac, params
+    q_mantle, Db, uc, Ra, nu = mantleheatflux(
+        temp_mantle, temp_surface, Rp, Rp, Rc, g, rho_mantle, mass_frac_water_solid, meltfrac
     )
 
-    # Calculate degassing rate (rmor = proxy for volatiles per unit volume)
     if mass_frac_water_solid > 1e-9:
-        _, rmor, _, _ = degas2(temp_mantle, Db, q_mantle, mass_frac_water_solid, Rp, g, temp_surface, params) 
+        _, rmor, _, _ = degas2(temp_mantle, Db, q_mantle, mass_frac_water_solid, Rp, g, temp_surface) 
     else:
         rmor = 0.0
 
-    da, de, dsh, dsp, _, Q_tidal = calculate_tidal_dissipation(
+    da_dt, de_dt, dspin_dt_h, dspin_dt_p, _, tidal_heating_p = calculate_tidal_dissipation(
         eccentricity, orbital_freq, spin_freq_p, spin_freq_h, Rp, Rh, Mp, Mh,
-        temp_mantle, Rc, nu, rho_mantle, meltfrac, params, tides_on_flag
+        temp_mantle, Rc, nu, rho_mantle, meltfrac, tides_on_flag
     )
 
+    # =====================================================================
     # --- Intermediate Rate Calculations ---
-    mantle_net_watts = Q_radio + Q_tidal - (surface_area * q_mantle)
+    # =====================================================================
     
-    # Total volcanic degassing rate (kg/s)
-    degassing_rate = rmor * surface_area * uc
+    # Mantle Heat & Thermal Inertia
+    mantle_cooling_watts       = surface_area * q_mantle
+    total_mantle_heating_watts = radiogenic_heating_watts + tidal_heating_p
+    thermal_inertia_mantle     = heat_capacity_mantle * Mmantle
 
-    # Atmospheric loss rates
-    total_H_loss = surface_area * f_loss_H
-    total_O_loss = surface_area * f_loss_O
-    
-    H2O_loss_rate = total_H_loss * (mu_H2O / (2.0 * mu_H))
-    O_gen_rate    = total_H_loss * (mu_O / (2.0 * mu_H))
+    # Degassing
+    total_degassing_rate_kg_s = rmor * surface_area * uc
 
-    # Surface thermal balance
-    heat_cap_atm   = cp_water * (pressure_atm * surface_area / g)
-    heat_cap_crust = cp_mantle * 3000.0 * ((4.0 / 3.0) * np.pi * (Rp**3 - (Rp - Db)**3))
+    # Mass Loss & Generation
+    total_mass_loss_H_kg_s = surface_area * flux_loss_H
+    total_mass_loss_O_kg_s = surface_area * flux_loss_O
     
-    net_surface_power = surface_area * (q_mantle - flux_space)
+    water_loss_to_space_kg_s         = total_mass_loss_H_kg_s * (molar_mass_H2O / (2.0 * molar_mass_H))
+    oxygen_generated_from_water_kg_s = total_mass_loss_H_kg_s * (molar_mass_O / (2.0 * molar_mass_H))
 
-    # --- Final State Vector Assembly ---
-    dTr_dt[0], dTr_dt[1], dTr_dt[2], dTr_dt[3] = da, de, dsh, dsp
+    # Surface Thermal Properties
+    net_surface_power = surface_area * (q_mantle - flux_to_space)
+    
+    heat_cap_atm   = heat_capacity_water * (pressure_atm * surface_area / g)
+    heat_cap_crust = heat_capacity_mantle * density_crust * ((4.0 / 3.0) * np.pi * (Rp**3 - (Rp - Db)**3))
+    total_surface_heat_capacity = heat_cap_atm + heat_cap_crust
 
-    # Cooling
-    dTr_dt[4] = mantle_net_watts / (cp_mantle * Mmantle)
+    # =====================================================================
+    # --- DIFFERENTIAL EQUATIONS ---
+    # =====================================================================
+    dTr_dt[0] = da_dt
+    dTr_dt[1] = de_dt
+    dTr_dt[2] = dspin_dt_h
+    dTr_dt[3] = dspin_dt_p
+
+    dTr_dt[4] = (-mantle_cooling_watts + total_mantle_heating_watts) / thermal_inertia_mantle
     
-    # Mass Balance
-    dTr_dt[5] = -degassing_rate
-    dTr_dt[6] = degassing_rate - H2O_loss_rate
-    dTr_dt[7] = O_gen_rate - total_O_loss
+    dTr_dt[5] = -total_degassing_rate_kg_s
+    dTr_dt[6] =  total_degassing_rate_kg_s - water_loss_to_space_kg_s
+    dTr_dt[7] =  oxygen_generated_from_water_kg_s - total_mass_loss_O_kg_s
     
-    # Surface Temp
-    dTr_dt[8] = net_surface_power / (heat_cap_atm + heat_cap_crust)
+    dTr_dt[8] = net_surface_power / total_surface_heat_capacity
 
     return dTr_dt

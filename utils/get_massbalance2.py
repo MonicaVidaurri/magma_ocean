@@ -8,110 +8,163 @@ def get_massbalance2(
         composition,
         total_iron_fraction,
         gravity,
-        planet_radius,
-        params):
+        planet_radius):
     """
-    Calculates the mass balance for Oxygen in the magma ocean system 
-    using parameters from a master TOML dictionary.
+    Calculates the mass balance for Oxygen in the magma ocean system.
+    
+    This function uses a bisection solver to find the equilibrium oxidation state 
+    of Iron (Fe3+/FeTotal) that balances the oxygen fugacity of the silicate melt 
+    with the partial pressure of oxygen in the atmosphere.
+
+    Parameters
+    ----------
+    melt_temp : float
+        Temperature of the silicate melt in Kelvin.
+    atm_pressure : float
+        Atmospheric surface pressure in Pascals.
+    magma_mass : float
+        Total mass of the active magma ocean in kg.
+    total_oxygen_mass : float
+        Total mass of Oxygen in the combined magma ocean + atmosphere system in kg.
+    composition : ndarray
+        1D array of background oxide mole fractions.
+    total_iron_fraction : float
+        Mass fraction of total Iron (Fe) in the magma ocean.
+    gravity : float
+        Gravitational acceleration in m/s^2.
+    planet_radius : float
+        Radius of the planet in meters.
+
+    Returns
+    -------
+    partial_pressure_o2 : float
+        Partial pressure of Oxygen in the atmosphere in Pascals.
+    mass_fraction_feo1_5 : float
+        Mass fraction of FeO1.5 (Fe3+ equivalent) in the magma ocean.
+    convergence_flag : int
+        0 if converged or solved stoichiometrically, 1 if max iterations reached.
+    moles_feo1_5 : float
+        Total moles of FeO1.5 in the magma ocean.
     """
 
-    # --- Unpack Parameters ---
-    comp_params = params['planet']['oxide_composition']
-    kc_params   = params['planet']['oxygen_fugacity']['kress_carmichael_1991']
-    num_params  = params['numerical']
-
-    mu_O      = comp_params['molar_mass_O']
-    mu_FeO1_5 = comp_params['molar_mass_FeO1_5']
-    mu_FeO    = comp_params['molar_mass_FeO']
+    # --- Physical Constants & Molar Masses ---
+    molar_mass_O      = 15.9994e-3      # kg/mol
+    molar_mass_FeO1_5 = 159.689e-3 / 2  # kg/mol
+    molar_mass_FeO    = 71.845e-3       # kg/mol
 
     surface_area = 4.0 * np.pi * planet_radius**2
 
     # --- Initial Molar Calculations ---
-    moles_iron_total   = (total_iron_fraction * magma_mass) / mu_FeO
-    moles_oxygen_total = total_oxygen_mass / mu_O
+    # Total moles of Iron (normalized to an all-Fe2+ basis for counting)
+    moles_iron_total   = total_iron_fraction * magma_mass / molar_mass_FeO
+    moles_oxygen_total = total_oxygen_mass / molar_mass_O
 
     # --- Pre-compute Static Thermodynamic Terms ---
-    # Unpack composition-dependent indices (Al2O3[2], CaO[4], Na2O[5], K2O[6], FeOt[8])
-    term_temp  = kc_params['temp_coeff'] / melt_temp
-    term_const = kc_params['constant_term']
-    term_comp  = (kc_params['coeff_Al2O3'] * composition[2] + 
-                  kc_params['coeff_FeOt']  * composition[8] + 
-                  kc_params['coeff_CaO']   * composition[4] + 
-                  kc_params['coeff_Na2O']  * composition[5] + 
-                  kc_params['coeff_K2O']   * composition[6])
+    # To optimize the bisection loop, we pre-calculate the Kress & Carmichael (1991) 
+    # terms that do not change with the iron oxidation state.
+    frac_Al2O3 = composition[2]
+    frac_CaO   = composition[4]
+    frac_Na2O  = composition[5]
+    frac_K2O   = composition[6]
+    frac_FeOt  = composition[8]
+
+    term_temp  = -1.1492e4 / melt_temp
+    term_const = 6.675
+    term_comp  = (2.243 * frac_Al2O3 + 1.828 * frac_FeOt - 3.201 * frac_CaO - 
+                 5.854 * frac_Na2O - 6.215 * frac_K2O)
     
-    T0 = kc_params['T0_ref']
-    term_corr  = kc_params['temp_correction_coeff'] * (1.0 - T0 / melt_temp - np.log(melt_temp / T0))
+    term_corr  = 3.36 * (1.0 - 1673.0 / melt_temp - np.log(melt_temp / 1673.0))
     
-    term_press = (kc_params['press_coeff_1'] * atm_pressure / melt_temp + 
-                  kc_params['press_coeff_2'] * (melt_temp - T0) * atm_pressure / melt_temp + 
-                  kc_params['press_coeff_3'] * (atm_pressure**2) / melt_temp)
+    term_press = (7.01e-7 * atm_pressure / melt_temp + 
+                  1.54e-10 * (melt_temp - 1673.0) * atm_pressure / melt_temp - 
+                  3.85e-17 * (atm_pressure**2) / melt_temp)
 
     static_kc_sum = term_temp + term_const + term_comp + term_corr + term_press
 
     # --- Internal Objective Function ---
     def calculate_disequilibrium(fraction_ferric):
-        # fraction_ferric is the molar ratio Fe3+/FeTotal
+        """
+        Calculates difference between equilibrium fO2 and atmospheric pO2.
+        fraction_ferric is the fraction of total Iron that is Fe3+ (FeO1.5).
+        """
+        # Clamp to avoid log(0) errors at perfectly reduced/oxidized extremes
         safe_ferric = np.clip(fraction_ferric, 1e-20, 1.0 - 1e-20)
 
         # Melt Equilibrium Fugacity (fO2)
         log_ferric_ferrous_ratio = np.log(safe_ferric / (1.0 - safe_ferric))
-        log_fugacity  = (log_ferric_ferrous_ratio + static_kc_sum) / kc_params['scaling_a']
+        log_fugacity  = (log_ferric_ferrous_ratio + static_kc_sum) / 0.196
         fugacity_melt = np.exp(log_fugacity)
         
         # Atmospheric Partial Pressure (pO2) from leftover oxygen
-        # Every mole of FeO1.5 uses 0.5 moles of free Oxygen (O)
         moles_oxygen_atm = moles_oxygen_total - 0.5 * safe_ferric * moles_iron_total
-        pressure_atm_O2  = (moles_oxygen_atm * mu_O * gravity) / surface_area
+        pressure_atm_O2  = (moles_oxygen_atm * molar_mass_O * gravity) / surface_area
         
         return fugacity_melt - pressure_atm_O2
 
     # --- Bisection Solver Setup ---
-    lower_bound, upper_bound = 0.0, 1.0
+    lower_bound = 0.0
+    upper_bound = 1.0
+
     f_lower = calculate_disequilibrium(lower_bound)
     f_upper = calculate_disequilibrium(upper_bound)
     
-    moles_feo1_5 = 0.0
+    moles_feo1_5     = 0.0
     convergence_flag = 0
-    skip_solver = False
+    skip_solver      = False
 
-    # Stoichiometric limit check
+    # Stoichiometric Check: Is the root outside [0, 1]?
     if np.sign(f_lower) * np.sign(f_upper) > 0:
-        #root is outside [0, 1], so system is stoichiometrically limited
-        moles_feo1_5 = min(moles_oxygen_total * 2.0, moles_iron_total)
+        # Default limit: Put all available Oxygen into FeO1.5
+        moles_feo1_5 = moles_oxygen_total * 2.0
+        moles_feo = moles_iron_total - moles_feo1_5
+        
+        # If we need more FeO1.5 than total Iron allows, cap it:
+        if moles_feo < 0:
+            moles_feo1_5 = moles_iron_total
+            
         skip_solver = True
 
     # --- Bisection Loop ---
     if not skip_solver:
         count = 0
         p_mid = 0.0
-        tol = num_params['solver_tolerance']
         
-        while count <= num_params['max_iterations']:
+        while count <= 500:
             p_mid = lower_bound + (upper_bound - lower_bound) / 2.0
             f_mid = calculate_disequilibrium(p_mid)
             
-            if f_mid == 0.0 or (upper_bound - lower_bound) / 2.0 < tol:
+            # Check convergence (1e-12 is a safe precision threshold for Float64)
+            if f_mid == 0.0 or ((upper_bound - lower_bound) / 2.0 < 1e-12 and f_mid < 0):
                 moles_feo1_5 = p_mid * moles_iron_total
+                convergence_flag = 0
                 break
             
             count += 1
+            
+            # Narrow bracket
             if np.sign(f_lower) * np.sign(f_mid) > 0:
-                lower_bound, f_lower = p_mid, f_mid
+                lower_bound = p_mid
+                f_lower = f_mid
             else:
-                upper_bound, f_upper = p_mid, f_mid
+                upper_bound = p_mid
+                f_upper = f_mid
         
-        if count > num_params['max_iterations']:
+        # Max iterations reached
+        if count > 500:
             moles_feo1_5 = p_mid * moles_iron_total
             convergence_flag = 1
 
-    # --- Final Output Calculations ---
+    # --- Final Outputs ---
+    # NaN safety check
     if np.isnan(melt_temp):
         return 0.0, 0.0, convergence_flag, moles_feo1_5
 
-    moles_o_atm = moles_oxygen_total - 0.5 * moles_feo1_5
-    partial_pressure_o2 = (moles_o_atm * mu_O * gravity) / surface_area
+    moles_o_atm         = moles_oxygen_total - 0.5 * moles_feo1_5
+    partial_pressure_o2 = (moles_o_atm * molar_mass_O * gravity) / surface_area
     
-    mass_fraction_feo1_5 = (moles_feo1_5 * mu_FeO1_5) / magma_mass if magma_mass > 0.0 else 0.0
+    if magma_mass > 0.0:
+        mass_fraction_feo1_5 = (moles_feo1_5 * molar_mass_FeO1_5) / magma_mass
+    else:
+        mass_fraction_feo1_5 = 0.0
 
     return partial_pressure_o2, mass_fraction_feo1_5, convergence_flag, moles_feo1_5

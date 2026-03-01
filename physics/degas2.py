@@ -1,14 +1,7 @@
 import numpy as np
 
-def degas2(
-        temp_mantle_potential, 
-        depth_boundary_layer, 
-        heat_flux_mantle, 
-        mass_frac_water_bulk, 
-        radius_planet, 
-        gravity, 
-        temp_surface,
-        params):
+def degas2(temp_mantle_potential, depth_boundary_layer, heat_flux_mantle, 
+           mass_frac_water_bulk, radius_planet, gravity, temp_surface):
     """
     Calculates the mantle degassing rate and melt zone properties based on 
     a 1D interior temperature profile and pressure-dependent solidus.
@@ -29,8 +22,6 @@ def degas2(
         The surface gravitational acceleration in m/s^2.
     temp_surface : float
         The surface temperature of the planet in Kelvin.
-    params : dict
-        Nested configuration dictionary parsed from the master TOML file.
 
     Returns
     -------
@@ -45,23 +36,15 @@ def degas2(
         The volume-averaged mass fraction of water partitioned into the melt phase.
     """
     
-    # --- Unpack Parameters ---
-    material = params['planet']['material']
-    thermo   = params['planet']['thermodynamics']
-    vols     = params['planet']['volatiles']
-    num      = params['numerical']
-
-    density_mantle        = material['density_mantle']
-    specific_heat_mantle  = thermo['specific_heat_mantle']
-    thermal_expansion     = thermo['thermal_expansion']
-    thermal_conductivity  = thermo['thermal_conductivity']
-    partition_coeff_water = vols['partition_coeff_water']
-
-    max_depth = num['degas_max_depth']
-    step_size = num['degas_step_size']
+    # --- Constants & Partitioning ---
+    partition_coeff_water = 0.01   # D_H2O
+    density_mantle        = 3.3e3  # rho_m (kg/m^3)
+    thermal_expansion     = 2e-5   # alpha (1/K)
+    heat_capacity         = 1.2e3  # cp (J/kg/K)
+    thermal_conductivity  = 4.2    # km (W/m/K)
 
     # --- Vectorized Depth & Pressure Grid ---
-    depths = np.arange(0.0, max_depth + step_size, step_size)
+    depths = np.arange(0.0, 300e3 + 1e3, 1e3)
     
     # Sanity Check: Ensure we don't calculate deeper than the planet's center
     depths = depths[depths < radius_planet]
@@ -70,20 +53,19 @@ def degas2(
     pressures_gpa = pressures_pa / 1e9
 
     # --- Thermodynamics (Solidus & Liquidus) ---
-    temp_solidus = np.minimum(
-        thermo['solidus_slope_low_p'] * pressures_gpa + thermo['solidus_intercept_low_p'],
-        thermo['solidus_slope_high_p'] * pressures_gpa + thermo['solidus_intercept_high_p']
-    )
-    temp_liquidus = temp_solidus + thermo['liquidus_offset']
+    temp_solidus = np.minimum(104.42 * pressures_gpa + 1420.0,
+                              26.53 * pressures_gpa + 1825.0)
+    temp_liquidus = temp_solidus + 600.0
 
     # Conductive profile (Crust) vs Adiabatic profile (Deep Mantle)
     temp_conductive = temp_surface + depths * heat_flux_mantle / thermal_conductivity
-    temp_adiabatic  = temp_mantle_potential + temp_mantle_potential * (thermal_expansion * gravity * depths / specific_heat_mantle)
+    temp_adiabatic  = temp_mantle_potential + temp_mantle_potential * (thermal_expansion * gravity * depths / heat_capacity)
     
     # Stitch them together at the boundary layer
     temp_profile = np.where(depths < depth_boundary_layer, temp_conductive, temp_adiabatic)
 
     # --- Melt Fraction & Water Partitioning ---
+    # Calculate melt fraction (0.0 to 1.0)
     melt_fraction = (temp_profile - temp_solidus) / (temp_liquidus - temp_solidus)
     melt_fraction = np.clip(melt_fraction, 0.0, 1.0)
     
@@ -96,11 +78,13 @@ def degas2(
     melting_indices = melt_fraction > 0.0
     
     if np.any(melting_indices):
+        # Above liquidus (melt fraction == 1.0), all water is in the melt
         water_in_melt[melting_indices] = mass_frac_water_bulk / (
             partition_coeff_water + melt_fraction[melting_indices] * (1.0 - partition_coeff_water)
         )
 
     # --- Robust Integration of Melt Zones ---
+    # Find all distinct, contiguous zones of melting
     idx_melt = np.where(melting_indices)[0]
     
     if len(idx_melt) < 2:
@@ -119,22 +103,27 @@ def degas2(
     integral_X_melt      = 0.0
 
     for block in melt_blocks:
+        # Ignore single-point melt spikes (un-integratable)
         if len(block) < 2:
             continue
             
         i_start, i_end = block[0], block[-1]
         
+        # Accumulate total thickness
         thickness_melt_layer += (depths[i_end] - depths[i_start])
         
+        # Exact geometric volume of this spherical shell (divided by 4/3 pi)
+        # Note: top is smaller depth = larger radius
         vol_shell = radii[i_start]**3 - radii[i_end]**3
         total_volume_proxy += vol_shell
         
+        # Extract blocks for integration
         z_block = depths[i_start:i_end+1]
         r_block = radii[i_start:i_end+1]
         f_block = melt_fraction[i_start:i_end+1]
         X_block = water_in_melt[i_start:i_end+1]
         
-        # Integrate over depth
+        # Integrate over depth (dz is strictly positive)
         integral_f_melt += np.trapezoid(f_block * r_block**2, z_block)
         integral_X_melt += np.trapezoid(X_block * r_block**2, z_block)
 
