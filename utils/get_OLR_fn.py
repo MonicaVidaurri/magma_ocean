@@ -7,6 +7,7 @@ def get_OLR_fn(
         temp_eq,
         temp_surface,
         pressure_surface_pa,
+        params,
         calculation_mode=1,
         use_constant_cp=True,
         cp_file_path=None):
@@ -24,6 +25,8 @@ def get_OLR_fn(
         Surface temperature in Kelvin.
     pressure_surface_pa : float
         Surface atmospheric pressure in Pascals.
+    params : dict
+        Master configuration dictionary containing TOML parameters.
     calculation_mode : int, optional
         1 = Analytic OLR (Assumes optically thick atmosphere).
         2 = Numerical integration of the Schwarzschild equation. Default is 1.
@@ -40,15 +43,21 @@ def get_OLR_fn(
         Outgoing longwave radiation flux at the top of the atmosphere in W/m^2.
     """
 
+    # --- Unpack Parameters ---
+    univ = params['constants']
+    atm  = params['planet']['atmosphere']
+    mat  = params['planet']['material']
+    num  = params['numerical']
+
     # --- Thermodynamic & Radiative Constants ---
-    stefan_boltzmann  = 5.67e-8    # sigma (W/m^2/K^4)
-    gas_constant_univ = 8.314462   # Rstar (J/K/mol)
-    molar_mass_h2o    = 18.015e-3  # kg/mol
+    stefan_boltzmann  = univ['stefan_boltzmann']   # sigma (W/m^2/K^4)
+    gas_constant_univ = univ['gas_constant']       # Rstar (J/K/mol)
+    molar_mass_h2o    = univ['molar_mass_H2O']     # kg/mol
     specific_gas_constant = gas_constant_univ / molar_mass_h2o  # R (J/kg/K)
     
     # Radiative properties (Two-stream approximation)
-    kappa_ir  = 1e-5  # Gray infrared absorption coefficient (m^2/kg)
-    cos_theta = 0.5   # Diffusivity factor (mu)
+    kappa_ir  = atm['kappa_ir']   # Gray infrared absorption coefficient (m^2/kg)
+    cos_theta = atm['cos_theta']  # Diffusivity factor (mu)
 
     # Stratospheric skin temperature (Eddington approximation boundary)
     temp_skin    = temp_eq / (2.0**0.25)
@@ -60,10 +69,10 @@ def get_OLR_fn(
     # --- Mode 1: Analytic Solution (Optically Thick Regime) ---
     # =====================================================================
     if calculation_mode == 1:
-        cp_const = 2000.0  # J/kg/K
+        cp_const = mat['specific_heat_H2O']  # J/kg/K
         
         # The analytic Gamma function solution assumes tau_infinity >> 1.
-        if tau_infinity < 10.0:
+        if tau_infinity < num['tau_thick_threshold']:
             print(f"Warning: Analytic OLR used with low optical depth (tau={tau_infinity:.2f}). " 
                   f"Results may overpredict flux. Consider numerical mode.")
             
@@ -75,11 +84,11 @@ def get_OLR_fn(
     # --- Mode 2: Numerical Integration (Schwarzschild Equation) ---
     # =====================================================================
     elif calculation_mode == 2:
-        n_levels = 100
+        n_levels = num['olr_n_levels']
 
         # --- Build Atmospheric Profile (Surface -> TOA) ---
         if use_constant_cp:
-            cp_const = 2000.0  # J/kg/K
+            cp_const = mat['specific_heat_H2O']  # J/kg/K
             # Log-spaced pressure from surface down to 1 Pa
             pressure_profile = np.logspace(np.log10(pressure_surface_pa), 0, n_levels)
             temp_profile = temp_surface * (pressure_profile / pressure_surface_pa)**(specific_gas_constant / cp_const)

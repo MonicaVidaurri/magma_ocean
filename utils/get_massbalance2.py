@@ -8,7 +8,8 @@ def get_massbalance2(
         composition,
         total_iron_fraction,
         gravity,
-        planet_radius):
+        planet_radius,
+        params):
     """
     Calculates the mass balance for Oxygen in the magma ocean system.
     
@@ -34,6 +35,8 @@ def get_massbalance2(
         Gravitational acceleration in m/s^2.
     planet_radius : float
         Radius of the planet in meters.
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -47,10 +50,16 @@ def get_massbalance2(
         Total moles of FeO1.5 in the magma ocean.
     """
 
+    # --- Unpack Parameters ---
+    c    = params['constants']
+    comp = params['planet']['oxide_composition']
+    kc   = params['planet']['oxygen_fugacity']['kress_carmichael_1991']
+    num  = params['numerical']
+
     # --- Physical Constants & Molar Masses ---
-    molar_mass_O      = 15.9994e-3      # kg/mol
-    molar_mass_FeO1_5 = 159.689e-3 / 2  # kg/mol
-    molar_mass_FeO    = 71.845e-3       # kg/mol
+    molar_mass_O      = c['molar_mass_O']
+    molar_mass_FeO1_5 = comp['molar_mass_FeO1_5']
+    molar_mass_FeO    = comp['molar_mass_FeO']
 
     surface_area = 4.0 * np.pi * planet_radius**2
 
@@ -68,16 +77,22 @@ def get_massbalance2(
     frac_K2O   = composition[6]
     frac_FeOt  = composition[8]
 
-    term_temp  = -1.1492e4 / melt_temp
-    term_const = 6.675
-    term_comp  = (2.243 * frac_Al2O3 + 1.828 * frac_FeOt - 3.201 * frac_CaO - 
-                 5.854 * frac_Na2O - 6.215 * frac_K2O)
+    term_temp  = kc['temp_coeff'] / melt_temp
+    term_const = kc['constant_term']
     
-    term_corr  = 3.36 * (1.0 - 1673.0 / melt_temp - np.log(melt_temp / 1673.0))
+    # Note: the TOML values carry the correct positive/negative signs
+    term_comp  = (kc['coeff_Al2O3'] * frac_Al2O3 + 
+                  kc['coeff_FeO']   * frac_FeOt + 
+                  kc['coeff_CaO']   * frac_CaO + 
+                  kc['coeff_Na2O']  * frac_Na2O + 
+                  kc['coeff_K2O']   * frac_K2O)
     
-    term_press = (7.01e-7 * atm_pressure / melt_temp + 
-                  1.54e-10 * (melt_temp - 1673.0) * atm_pressure / melt_temp - 
-                  3.85e-17 * (atm_pressure**2) / melt_temp)
+    T0 = kc['temp_ref']
+    term_corr  = kc['temp_correction_coeff'] * (1.0 - T0 / melt_temp - np.log(melt_temp / T0))
+    
+    term_press = (kc['press_coeff_1'] * atm_pressure / melt_temp + 
+                  kc['press_coeff_2'] * (melt_temp - T0) * atm_pressure / melt_temp + 
+                  kc['press_coeff_3'] * (atm_pressure**2) / melt_temp)
 
     static_kc_sum = term_temp + term_const + term_comp + term_corr + term_press
 
@@ -92,7 +107,7 @@ def get_massbalance2(
 
         # Melt Equilibrium Fugacity (fO2)
         log_ferric_ferrous_ratio = np.log(safe_ferric / (1.0 - safe_ferric))
-        log_fugacity  = (log_ferric_ferrous_ratio + static_kc_sum) / 0.196
+        log_fugacity  = (log_ferric_ferrous_ratio + static_kc_sum) / kc['scaling_a']
         fugacity_melt = np.exp(log_fugacity)
         
         # Atmospheric Partial Pressure (pO2) from leftover oxygen
@@ -129,12 +144,15 @@ def get_massbalance2(
         count = 0
         p_mid = 0.0
         
-        while count <= 500:
+        max_iters = num['max_iterations']
+        tolerance = num['solver_tolerance']
+        
+        while count <= max_iters:
             p_mid = lower_bound + (upper_bound - lower_bound) / 2.0
             f_mid = calculate_disequilibrium(p_mid)
             
-            # Check convergence (1e-12 is a safe precision threshold for Float64)
-            if f_mid == 0.0 or ((upper_bound - lower_bound) / 2.0 < 1e-12 and f_mid < 0):
+            # Check convergence 
+            if f_mid == 0.0 or ((upper_bound - lower_bound) / 2.0 < tolerance and f_mid < 0):
                 moles_feo1_5 = p_mid * moles_iron_total
                 convergence_flag = 0
                 break
@@ -150,7 +168,7 @@ def get_massbalance2(
                 f_upper = f_mid
         
         # Max iterations reached
-        if count > 500:
+        if count > max_iters:
             moles_feo1_5 = p_mid * moles_iron_total
             convergence_flag = 1
 

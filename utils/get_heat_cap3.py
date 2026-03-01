@@ -6,7 +6,8 @@ def get_heat_cap3(
         radius_core,
         mass_magma_ocean,
         dmass_solid_dt,
-        func_get_meltfrac):
+        func_get_meltfrac,
+        params):
     """
     Calculates the effective heat capacity (thermal inertia) of the mantle, 
     incorporating both sensible heat and the latent heat of fusion released/absorbed 
@@ -30,7 +31,9 @@ def get_heat_cap3(
         The derivative of solid mass with respect to temperature (dMs/dT). 
         Must have units of kg/K.
     func_get_meltfrac : callable
-        Function to compute the melt fraction given (gravity, temp, Rp, Rc, Mass).
+        Function to compute the melt fraction given (gravity, temp, Rp, Rc, Mass, params).
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -38,13 +41,17 @@ def get_heat_cap3(
         The total effective heat capacity of the mantle in J/K.
     """
 
+    # --- Unpack Parameters ---
+    thermo = params['planet']['thermodynamics']
+
     # --- Thermodynamic Constants ---
-    specific_heat_mantle = 1.2e3  # cp (J/kg/K)
-    latent_heat_fusion   = 4.0e5    # deltaH (J/kg)
+    specific_heat_mantle = thermo['specific_heat_mantle']  # cp (J/kg/K)
+    latent_heat_fusion   = thermo['latent_heat_fusion']    # deltaH (J/kg)
 
     # --- Melt Fraction Calculation ---
     # The get_meltfrac function returns (exchange_pressure, volume_melt_fraction)
-    _, volume_melt_fraction = func_get_meltfrac(gravity, temp_mantle, radius_planet, radius_core, mass_mantle)
+    # We pass the master 'params' dict to the callable so it can access its own constants.
+    _, volume_melt_fraction = func_get_meltfrac(gravity, temp_mantle, radius_planet, radius_core, mass_mantle, params)
 
     # --- Effective Heat Capacity Calculation ---
     # Sensible Heat Capacity (J/K):

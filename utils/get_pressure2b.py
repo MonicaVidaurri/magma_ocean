@@ -9,7 +9,8 @@ def get_pressure2b(
         radius_planet,
         gravity,
         radius_core,
-        mass_water_total):
+        mass_water_total,
+        params):
     """
     Calculates the equilibrium partition of water between a liquid magma ocean 
     and the overlying steam atmosphere using a Newton-Raphson root finder (version b).
@@ -32,6 +33,8 @@ def get_pressure2b(
         Radius of the planetary core in meters.
     mass_water_total : float
         Total mass of water in the magma ocean + atmosphere system in kg.
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -43,13 +46,18 @@ def get_pressure2b(
         Partition coefficient for water between solid and melt.
     """
 
-    # --- Constants & Solubility Parameters ---
-    temp_solidus_static   = 1373.0  # K
-    partition_coeff_water = 0.01  # kH2O (distribution between solid and melt)
+    # --- Unpack Parameters ---
+    thermo = params['planet']['thermodynamics']
+    vols   = params['planet']['volatiles']
+    num    = params['numerical']
 
-    # Empirical water solubility law parameters: X_water = s * P^n
-    solubility_coeff    = 3.44e-8
-    solubility_exponent = 0.74
+    # --- Constants & Solubility Parameters ---
+    temp_solidus_static   = thermo['temp_solidus_static']
+    partition_coeff_water = vols['partition_coeff_H2O'] 
+    solubility_coeff      = vols['solubility_coeff_H2O']
+    solubility_exponent   = vols['solubility_exponent_H2O']
+    max_iters = num['max_nr_iterations']
+    tolerance = num['nr_solver_tolerance']
 
     surface_area    = 4.0 * np.pi * radius_planet**2
     mass_atm_factor = surface_area / gravity
@@ -57,8 +65,8 @@ def get_pressure2b(
     # --- Phase Partitioning ---
     if temp_mantle > temp_solidus_static:
         
-        # Get melt fraction using the robust integration function
-        _, volume_melt_fraction = get_meltfrac(gravity, temp_mantle, radius_planet, radius_core, mass_mantle)
+        # Get melt fraction using the robust integration function (passing params)
+        _, volume_melt_fraction = get_meltfrac(gravity, temp_mantle, radius_planet, radius_core, mass_mantle, params)
 
         mass_liquid = volume_melt_fraction * mass_magma_ocean
         mass_solid  = (1.0 - volume_melt_fraction) * mass_magma_ocean
@@ -70,9 +78,8 @@ def get_pressure2b(
         # Initial guess: assume all water is evenly mixed in the mantle
         X_current = mass_water_total / mass_mantle
 
-        # Using 30 iterations to mimic original version 'b' limits, 
-        # but with robust relative convergence.
-        for _ in range(30):
+        # Using bounded iterations to mimic original version 'b' limits
+        for _ in range(max_iters):
             # Protect against negative guesses in fractional powers
             X_safe = max(X_current, 1e-20)
 
@@ -93,7 +100,7 @@ def get_pressure2b(
             X_next = max(X_next, 1e-12)
 
             # Relative convergence check
-            if abs(X_next - X_safe) / X_safe < 1e-10:
+            if abs(X_next - X_safe) / X_safe < tolerance:
                 X_current = X_next
                 break
 

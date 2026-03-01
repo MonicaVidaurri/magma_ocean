@@ -6,7 +6,8 @@ def get_meltfrac(
         temp_potential,
         radius_planet,
         radius_core,
-        mass_mantle):
+        mass_mantle,
+        params):
     """
     Calculates the volume-averaged melt fraction of the magma ocean and 
     the pressure at its base, determined by the intersection of the mantle 
@@ -24,6 +25,8 @@ def get_meltfrac(
         Radius of the planetary core in meters.
     mass_mantle : float
         Total mass of the mantle in kg.
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -34,17 +37,28 @@ def get_meltfrac(
         Volume-averaged melt fraction over the entire depth of the magma ocean.
     """
 
-    # --- Thermodynamic Constants ---
-    thermal_expansion = 2e-5   # alpha (1/K)
-    heat_capacity     = 1.2e3  # cp (J/kg/K)
+    # --- Unpack Parameters ---
+    thermo = params['planet']['thermodynamics']
+    num    = params['numerical']
+
+    # --- Thermodynamic Constants & Grid ---
+    thermal_expansion = thermo['thermal_expansion']    # alpha (1/K)
+    heat_capacity     = thermo['specific_heat_mantle'] # cp (J/kg/K)
+    step_size         = num['melt_grid_step']          # (m)
+    
+    slope_low_p       = thermo['solidus_slope_low_p']
+    int_low_p         = thermo['solidus_intercept_low_p']
+    slope_high_p      = thermo['solidus_slope_high_p']
+    int_high_p        = thermo['solidus_intercept_high_p']
+    liq_offset        = thermo['liquidus_offset']
 
     # --- Planet Geometry & Grid ---
     # Calculate bulk mantle density (kg/m^3)
     volume_mantle  = (4.0 / 3.0) * np.pi * (radius_planet**3 - radius_core**3)
     density_mantle = mass_mantle / volume_mantle
 
-    # Depth grid from surface down to the Core-Mantle Boundary (CMB) in 5km steps
-    depths = np.arange(0, radius_planet - radius_core + 5e3, 5e3)
+    # Depth grid from surface down to the Core-Mantle Boundary (CMB)
+    depths = np.arange(0, radius_planet - radius_core + step_size, step_size)
 
     # Hydrostatic pressure in Pascals and GPa
     pressures_pa  = gravity * density_mantle * depths
@@ -52,9 +66,9 @@ def get_meltfrac(
 
     # --- Thermodynamics (Solidus & Liquidus) ---
     # Piecewise linear approximation of the mantle melting curves
-    temp_solidus  = np.minimum(104.42 * pressures_gpa + 1420.0, 
-                              26.53 * pressures_gpa + 1825.0)
-    temp_liquidus = temp_solidus + 600.0
+    temp_solidus  = np.minimum(slope_low_p * pressures_gpa + int_low_p, 
+                               slope_high_p * pressures_gpa + int_high_p)
+    temp_liquidus = temp_solidus + liq_offset
 
     # Mantle adiabatic temperature profile
     temp_adiabat  = temp_potential + temp_potential * (thermal_expansion * gravity * depths / heat_capacity)

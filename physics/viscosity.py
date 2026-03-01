@@ -5,7 +5,8 @@ def viscosity(
         temp_surface,
         density_mantle,
         mass_frac_water,
-        melt_fraction):
+        melt_fraction,
+        params):
     """
     Calculates the kinematic viscosity of the mantle across solid and liquid 
     regimes using the Lebrun et al. (2013) parameterization.
@@ -27,6 +28,8 @@ def viscosity(
         Mass fraction of water in the convecting region. (Currently unused in the core math).
     melt_fraction : float
         Volume-averaged melt fraction of the convecting region (0.0 to 1.0).
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -34,21 +37,25 @@ def viscosity(
         The kinematic viscosity of the mantle or magma ocean in m^2/s.
     """
 
+    # --- Unpack Parameters ---
+    univ = params['constants']
+    rheo = params['planet']['rheology']
+
     # --- Constants ---
-    gas_constant = 8.31447  # J/(mol K)
+    gas_constant = univ['gas_constant']  # J/(mol K)
 
     # --- Liquid Magma Viscosity (Dynamic, Pa·s) ---
     # Empirical parameters for silicate melt viscosity
-    A_coeff_liquid        = 0.00024  # Pa s
-    B_coeff_liquid        = 4600.0   # K
-    temp_reference_liquid = 1000.0   # K
+    A_coeff_liquid        = rheo['liquid_visc_pre_exponential'] # Pa s
+    B_coeff_liquid        = rheo['liquid_visc_activation_temp'] # K
+    temp_reference_liquid = rheo['liquid_visc_ref_temp']        # K
 
     dynamic_visc_liquid = A_coeff_liquid * np.exp(B_coeff_liquid / (temp_mantle - temp_reference_liquid))
 
     # --- Solid Mantle Viscosity (Dynamic, Pa·s) ---
     # Arrhenius parameters for solid-state creep
-    pre_exponential_solid = 3.7489e9  # Pa s
-    activation_energy     = 350e3     # J/mol
+    pre_exponential_solid = rheo['solid_visc_pre_exponential'] # Pa s
+    activation_energy     = rheo['solid_visc_activation_energy'] # J/mol
 
     dynamic_visc_solid = pre_exponential_solid * np.exp(activation_energy / (gas_constant * temp_mantle))
 
@@ -56,7 +63,7 @@ def viscosity(
     # The rheology transitions at a critical crystal fraction (phi_c ~ 0.6).
     # Crystal fraction is (1.0 - melt_fraction).
     crystal_fraction          = 1.0 - melt_fraction
-    critical_crystal_fraction = 0.6
+    critical_crystal_fraction = rheo['critical_crystal_fraction']
 
     # Constrain melt fraction to physical bounds
     melt_fraction = np.clip(melt_fraction, 0.0, 1.0)
@@ -70,7 +77,7 @@ def viscosity(
     else:
         # Matrix-supported regime (Solid Mantle)
         # Melt weakens the solid matrix exponentially
-        melt_weakening_factor = 26.0
+        melt_weakening_factor = rheo['melt_weakening_factor']
         dynamic_viscosity     = dynamic_visc_solid * np.exp(-melt_weakening_factor * melt_fraction)
 
     # --- Convert to Kinematic Viscosity ---

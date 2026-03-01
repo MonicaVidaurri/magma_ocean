@@ -10,7 +10,8 @@ def get_massbalance4(
         composition,
         total_iron_fraction,
         gravity,
-        planet_radius):
+        planet_radius,
+        params):
     """
     Calculates mass balance for Oxygen using a hybrid solver strategy.
     
@@ -36,6 +37,8 @@ def get_massbalance4(
         Gravitational acceleration in m/s^2.
     planet_radius : float
         Radius of the planet in meters.
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -49,10 +52,16 @@ def get_massbalance4(
         Total moles of FeO1.5 in the magma ocean.
     """
 
+    # --- Unpack Parameters ---
+    c = params['constants']
+    comp = params['planet']['oxide_composition']
+    kc = params['planet']['oxygen_fugacity']['kress_carmichael_1991']
+    num = params['numerical']
+
     # --- Physical Constants & Molar Masses ---
-    molar_mass_O      = 15.9994e-3      # kg/mol
-    molar_mass_FeO1_5 = 159.689e-3 / 2  # kg/mol
-    molar_mass_FeO    = 71.845e-3       # kg/mol
+    molar_mass_O      = c['molar_mass_O']
+    molar_mass_FeO1_5 = comp['molar_mass_FeO1_5']
+    molar_mass_FeO    = comp['molar_mass_FeO']
 
     surface_area   = 4.0 * np.pi * planet_radius**2
     surface_factor = surface_area / (molar_mass_O * gravity)
@@ -78,35 +87,45 @@ def get_massbalance4(
         frac_K2O   = composition[6]
         frac_FeOt  = composition[8]
 
-        term_temp  = -1.1492e4 / melt_temp
-        term_const = 6.675
-        term_comp  = (2.243 * frac_Al2O3 + 1.828 * frac_FeOt - 3.201 * frac_CaO - 
-                     5.854 * frac_Na2O - 6.215 * frac_K2O)
+        term_temp  = kc['temp_coeff'] / melt_temp
+        term_const = kc['constant_term']
         
-        term_correction = 3.36 * (1.0 - 1673.0 / melt_temp - np.log(melt_temp / 1673.0))
-        term_pressure   = (7.01e-7 * atm_pressure / melt_temp + 
-                         1.54e-10 * (melt_temp - 1673.0) * atm_pressure / melt_temp - 
-                         3.85e-17 * (atm_pressure**2) / melt_temp)
+        # Note: Negative coefficients are naturally handled by the TOML values
+        term_comp  = (kc['coeff_Al2O3'] * frac_Al2O3 + 
+                      kc['coeff_FeO']   * frac_FeOt + 
+                      kc['coeff_CaO']   * frac_CaO + 
+                      kc['coeff_Na2O']  * frac_Na2O + 
+                      kc['coeff_K2O']   * frac_K2O)
+        
+        T0 = kc['temp_ref']
+        term_correction = kc['temp_correction_coeff'] * (1.0 - T0 / melt_temp - np.log(melt_temp / T0))
+        term_pressure   = (kc['press_coeff_1'] * atm_pressure / melt_temp + 
+                           kc['press_coeff_2'] * (melt_temp - T0) * atm_pressure / melt_temp + 
+                           kc['press_coeff_3'] * (atm_pressure**2) / melt_temp)
 
         static_exponent_sum = term_temp + term_const + term_comp + term_correction + term_pressure
 
         # Iteration Loop setup
         moles_Fe3_current = moles_iron_total * 1e-3  # Initial guess
         
-        while count <= 100:
+        max_iters = num['max_fixed_point_iters']
+        fallback_threshold = num['fallback_iter_threshold']
+        tolerance = num['solver_tolerance', 1e-12]
+        
+        while count <= max_iters:
             # Protect against log(<=0) or division by zero
             safe_Fe3 = np.clip(moles_Fe3_current, 1e-20, moles_iron_total - 1e-20)
             
             # Calculate next estimate based on equilibrium relation
             log_ratio = np.log(safe_Fe3 / (moles_iron_total - safe_Fe3))
-            exponent  = (log_ratio + static_exponent_sum) / 0.196
+            exponent  = (log_ratio + static_exponent_sum) / kc['scaling_a']
             
             moles_Fe3_next = 2.0 * (moles_oxygen_total - surface_factor * np.exp(exponent))
             
             # Relative Convergence Check
             relative_error = np.abs(moles_Fe3_next - moles_Fe3_current) / max(moles_Fe3_current, 1e-10)
             
-            if relative_error < 1e-12 and moles_Fe3_next > 0:
+            if relative_error < tolerance and moles_Fe3_next > 0:
                 moles_feo1_5 = moles_Fe3_next
                 moles_o_atm = moles_oxygen_total - 0.5 * moles_feo1_5
                 
@@ -118,7 +137,7 @@ def get_massbalance4(
             count += 1
             
             # Fallback Logic for slow convergence in low-oxygen regime
-            if count >= 50:
+            if count >= fallback_threshold:
                 # Force stoichiometric limit: All available Oxygen becomes FeO1.5
                 moles_feo1_5 = moles_oxygen_total * 2.0
                 moles_o_atm  = moles_oxygen_total - 0.5 * moles_feo1_5
@@ -140,7 +159,7 @@ def get_massbalance4(
     else:
         partial_pressure_o2, mass_fraction_feo1_5, _, moles_feo1_5 = get_massbalance2(
             melt_temp, atm_pressure, magma_mass, total_oxygen_mass, 
-            composition, total_iron_fraction, gravity, planet_radius
+            composition, total_iron_fraction, gravity, planet_radius, params
         )
         
         # Diagnostics
@@ -163,6 +182,6 @@ def get_massbalance4(
             [moles_FeO, moles_FeO1_5_forced]
         ])
         
-        partial_pressure_o2 = get_fO2(melt_temp, atm_pressure, new_composition)
+        partial_pressure_o2 = get_fO2(melt_temp, atm_pressure, new_composition, params)
 
     return partial_pressure_o2, mass_fraction_feo1_5, count, moles_feo1_5

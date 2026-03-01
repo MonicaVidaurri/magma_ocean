@@ -1,6 +1,6 @@
 import numpy as np
 
-def get_comp(composition_model=1):
+def get_comp(params, composition_model=1):
     """
     Returns the initial molar oxide composition of the planetary mantle.
 
@@ -11,6 +11,8 @@ def get_comp(composition_model=1):
 
     Parameters
     ----------
+    params : dict
+        Main configuration dictionary containing TOML parameters.
     composition_model : int, optional
         Selector for the bulk mantle composition. 
         Currently only `1` (Bulk Silicate Earth) is implemented. Default is 1.
@@ -32,36 +34,40 @@ def get_comp(composition_model=1):
         [10] FeO    (Ferrous Iron)
         [11] Fe2O3  (Ferric Iron, standard basis)
     """
+    
+    # --- Unpack Parameters ---
+    comp = params['planet']['oxide_composition']
 
     # --- Molar Masses (g/mol) ---
-    molar_mass_SiO2  = 60.084
-    molar_mass_TiO2  = 79.866
-    molar_mass_Al2O3 = 101.961
-    molar_mass_MgO   = 40.304
-    molar_mass_CaO   = 56.078
-    molar_mass_Na2O  = 61.979
-    molar_mass_K2O   = 94.196
-    molar_mass_P2O5  = 141.945
+    # Note: Pulled from MKS (kg/mol) TOML and multiplied by 1000 to match original g/mol logic
+    molar_mass_SiO2  = comp['molar_mass_SiO2'] * 1000.0
+    molar_mass_TiO2  = comp['molar_mass_TiO2'] * 1000.0
+    molar_mass_Al2O3 = comp['molar_mass_Al2O3'] * 1000.0
+    molar_mass_MgO   = comp['molar_mass_MgO'] * 1000.0
+    molar_mass_CaO   = comp['molar_mass_CaO'] * 1000.0
+    molar_mass_Na2O  = comp['molar_mass_Na2O'] * 1000.0
+    molar_mass_K2O   = comp['molar_mass_K2O'] * 1000.0
+    molar_mass_P2O5  = comp['molar_mass_P2O5'] * 1000.0
     
-    molar_mass_FeO    = 71.845
-    molar_mass_FeO1_5 = 159.689 / 2.0   # Equivalent to half of Fe2O3
+    molar_mass_FeO    = comp['molar_mass_FeO'] * 1000.0
+    molar_mass_FeO1_5 = comp['molar_mass_FeO1_5'] * 1000.0
 
     # --- Initial Mass Fractions (kg/kg) ---
     if composition_model == 1:
         # Standard Bulk Silicate Earth (BSE) composition
-        mass_frac_SiO2  = 0.4597
-        mass_frac_TiO2  = 0.012
-        mass_frac_Al2O3 = 0.0477
-        mass_frac_MgO   = 0.3666
-        mass_frac_CaO   = 0.0378
-        mass_frac_Na2O  = 0.0035
-        mass_frac_K2O   = 0.0004
-        mass_frac_P2O5  = 0.002
+        mass_frac_SiO2  = comp['mass_frac_SiO2']
+        mass_frac_TiO2  = comp['mass_frac_TiO2']
+        mass_frac_Al2O3 = comp['mass_frac_Al2O3']
+        mass_frac_MgO   = comp['mass_frac_MgO']
+        mass_frac_CaO   = comp['mass_frac_CaO']
+        mass_frac_Na2O  = comp['mass_frac_Na2O']
+        mass_frac_K2O   = comp['mass_frac_K2O']
+        mass_frac_P2O5  = comp['mass_frac_P2O5']
         
-        mass_frac_FeOt = 0.08
+        mass_frac_FeOt = comp['mass_frac_FeO_total']
         
         # Initial oxidation state (Highly reduced initial magma ocean)
-        ratio_Fe3_to_total_Fe = 1e-12
+        ratio_Fe3_to_total_Fe = comp['ratio_Fe3_to_total_Fe']
     else:
         raise NotImplementedError(f"Unsupported composition model: {composition_model}. Only model 1 (BSE) is implemented.")
 

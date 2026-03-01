@@ -1,7 +1,7 @@
 import numpy as np
 
 def degas2(temp_mantle_potential, depth_boundary_layer, heat_flux_mantle, 
-           mass_frac_water_bulk, radius_planet, gravity, temp_surface):
+           mass_frac_water_bulk, radius_planet, gravity, temp_surface, params):
     """
     Calculates the mantle degassing rate and melt zone properties based on 
     a 1D interior temperature profile and pressure-dependent solidus.
@@ -22,6 +22,8 @@ def degas2(temp_mantle_potential, depth_boundary_layer, heat_flux_mantle,
         The surface gravitational acceleration in m/s^2.
     temp_surface : float
         The surface temperature of the planet in Kelvin.
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -36,15 +38,30 @@ def degas2(temp_mantle_potential, depth_boundary_layer, heat_flux_mantle,
         The volume-averaged mass fraction of water partitioned into the melt phase.
     """
     
+    # --- Unpack Parameters ---
+    mat    = params['planet']['material']
+    thermo = params['planet']['thermodynamics']
+    vols   = params['planet']['volatiles']
+    num    = params['numerical']
+
     # --- Constants & Partitioning ---
-    partition_coeff_water = 0.01   # D_H2O
-    density_mantle        = 3.3e3  # rho_m (kg/m^3)
-    thermal_expansion     = 2e-5   # alpha (1/K)
-    heat_capacity         = 1.2e3  # cp (J/kg/K)
-    thermal_conductivity  = 4.2    # km (W/m/K)
+    partition_coeff_water = vols['partition_coeff_H2O']   # D_H2O
+    density_mantle        = mat['density_mantle']         # rho_m (kg/m^3)
+    thermal_expansion     = thermo['thermal_expansion']   # alpha (1/K)
+    heat_capacity         = thermo['specific_heat_mantle']# cp (J/kg/K)
+    thermal_conductivity  = thermo['thermal_conductivity']# km (W/m/K)
+    
+    max_depth = num['degas_max_depth']
+    step_size = num['degas_step_size']
+    
+    slope_low_p  = thermo['solidus_slope_low_p']
+    int_low_p    = thermo['solidus_intercept_low_p']
+    slope_high_p = thermo['solidus_slope_high_p']
+    int_high_p   = thermo['solidus_intercept_high_p']
+    liq_offset   = thermo['liquidus_offset']
 
     # --- Vectorized Depth & Pressure Grid ---
-    depths = np.arange(0.0, 300e3 + 1e3, 1e3)
+    depths = np.arange(0.0, max_depth + step_size, step_size)
     
     # Sanity Check: Ensure we don't calculate deeper than the planet's center
     depths = depths[depths < radius_planet]
@@ -53,9 +70,9 @@ def degas2(temp_mantle_potential, depth_boundary_layer, heat_flux_mantle,
     pressures_gpa = pressures_pa / 1e9
 
     # --- Thermodynamics (Solidus & Liquidus) ---
-    temp_solidus = np.minimum(104.42 * pressures_gpa + 1420.0,
-                              26.53 * pressures_gpa + 1825.0)
-    temp_liquidus = temp_solidus + 600.0
+    temp_solidus = np.minimum(slope_low_p * pressures_gpa + int_low_p,
+                              slope_high_p * pressures_gpa + int_high_p)
+    temp_liquidus = temp_solidus + liq_offset
 
     # Conductive profile (Crust) vs Adiabatic profile (Deep Mantle)
     temp_conductive = temp_surface + depths * heat_flux_mantle / thermal_conductivity

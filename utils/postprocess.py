@@ -26,7 +26,8 @@ def postprocess_magma_ocean(
         tsat,
         a,
         Mp,
-        LStar):
+        LStar,
+        params):
     """
     Post-processes the raw ODE solver outputs to reconstruct derived physical 
     variables (pressures, melt fractions, fluxes) that were not explicitly 
@@ -56,6 +57,8 @@ def postprocess_magma_ocean(
         Semi-major axis in meters.
     Mp, LStar : float
         Planet mass (kg) and Stellar luminosity (Watts).
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -65,11 +68,15 @@ def postprocess_magma_ocean(
     """
     
     # --- Constants & Geometry ---
-    sec_per_year   = 3.15569e7
+    c = params['constants']
+    comp = params['planet']['oxide_composition']
+    
+    sec_per_year   = c['seconds_per_year']
+    molar_mass_O   = c['molar_mass_O']
+    molar_mass_H2O = c['molar_mass_H2O']
+    molar_mass_FeO = comp['molar_mass_FeO']
+    
     surface_area   = 4.0 * np.pi * Rp**2
-    molar_mass_O   = 15.9994e-3
-    molar_mass_H2O = 18.015e-3
-    molar_mass_FeO = 71.845e-3
     
     volume_mantle = (4.0 / 3.0) * np.pi * (Rp**3 - Rc**3)
     rho_mantle    = Mmantle / volume_mantle
@@ -108,25 +115,25 @@ def postprocess_magma_ocean(
         Mmo[i] = (4.0 / 3.0) * np.pi * (Rp**3 - radius_solid**3) * rho_mantle
 
         # Melt Fraction
-        _, meltfrac[i] = get_meltfrac(gp, temp_mantle, Rp, Rc, Mmantle)
+        _, meltfrac[i] = get_meltfrac(gp, temp_mantle, Rp, Rc, Mmantle, params)
 
         # Water Partitioning (Pressure)
         if Wmo[i] > 0.0:
             Patm[i], FH2O_arr[i], kH2O_arr[i] = get_pressure2(
-                temp_mantle, radius_solid, Mmo[i], Mmantle, Rp, gp, Rc, Wmo[i]
+                temp_mantle, radius_solid, Mmo[i], Mmantle, Rp, gp, Rc, Wmo[i], params
             )
         else:
             Patm[i] = 0.0
 
         # Radiative Flux
         temp_surface = Tr1[10, i]
-        flux_arr[i]  = get_flux(temp_surface, Teq, Patm[i], Rp, gp)
+        flux_arr[i]  = get_flux(temp_surface, Teq, Patm[i], Rp, gp, params)
 
         # Oxygen Partitioning
         mass_oxygen_mo_atm = Tr1[8, i]
         if mass_oxygen_mo_atm > 0.0:
             PO2[i], FFeO1_5[i], _, nFeO1_5[i] = get_massbalance4(
-                temp_mantle, Patm[i], Mmo[i], mass_oxygen_mo_atm, Xi, FeOt, gp, Rp
+                temp_mantle, Patm[i], Mmo[i], mass_oxygen_mo_atm, Xi, FeOt, gp, Rp, params
             )
             # Failsafe if oxygen is entirely in the atmosphere
             if PO2[i] <= 0.0:
@@ -142,10 +149,10 @@ def postprocess_magma_ocean(
         
         # Build exact 12-element array expected by get_fO2
         modified_Xi = np.concatenate([Xi[:10], [moles_FeO, nFeO1_5[i]]])
-        fo2[i] = get_fO2(temp_mantle, Patm[i], modified_Xi)
+        fo2[i] = get_fO2(temp_mantle, Patm[i], modified_Xi, params)
 
         # Atmospheric Escape
-        phi_H[i], phi_O[i] = get_loss(t_flux, Lbol, t1_sec[i], PO2[i], Patm[i], tsat, a, Mp, Rp, LStar)
+        phi_H[i], phi_O[i] = get_loss(t_flux, Lbol, t1_sec[i], PO2[i], Patm[i], tsat, a, Mp, Rp, LStar, params)
 
     # --- Phase 1 Global Balances ---
     # Total water = Solid Water (Tr1[6]) + Magma/Atm Water (Tr1[7])

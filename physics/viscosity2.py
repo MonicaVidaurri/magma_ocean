@@ -5,7 +5,8 @@ def viscosity2(
         mass_frac_water,
         gravity,
         density_mantle,
-        pressure_pa):
+        pressure_pa,
+        params):
     """
     Calculates the kinematic viscosity of the mantle incorporating water-weakening 
     effects, following the parameterization of Sandu et al. (2011) and Li et al. (2008).
@@ -26,22 +27,29 @@ def viscosity2(
         Bulk density of the mantle in kg/m^3.
     pressure_pa : float
         Local mantle pressure in Pascals.
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
     kinematic_viscosity : float
         The kinematic viscosity of the mantle in m^2/s.
     """
+
+    # --- Unpack Parameters ---
+    univ  = params['constants']
+    mat   = params['planet']['material']
+    sandu = params['planet']['rheology']['sandu_2011']
     
     # --- Constants & Molar Masses ---
-    gas_constant   = 8.31447    # J/(mol K)
-    molar_mass_H2O = 18.015e-3  # kg/mol
+    gas_constant   = univ['gas_constant']    # J/(mol K)
+    molar_mass_H2O = univ['molar_mass_H2O']  # kg/mol
 
     # Olivine solid solution properties: (Mg,Fe)2SiO4
-    fraction_forsterite   = 0.9
-    fraction_fayalite     = 0.1
-    molar_mass_forsterite = 140.69e-3  # kg/mol
-    molar_mass_fayalite   = 203.78e-3  # kg/mol
+    fraction_forsterite   = mat['fraction_forsterite']
+    fraction_fayalite     = mat['fraction_fayalite']
+    molar_mass_forsterite = mat['molar_mass_forsterite']  # kg/mol
+    molar_mass_fayalite   = mat['molar_mass_fayalite']    # kg/mol
 
     # Bulk molar mass of the idealized olivine mantle
     molar_mass_olivine = (fraction_forsterite * molar_mass_forsterite + 
@@ -58,10 +66,10 @@ def viscosity2(
 
     # --- Water Fugacity (Li et al., 2008) ---
     # Empirical polynomial fit linking OH concentration to water fugacity
-    c0 = -7.9859
-    c1 = 4.3559
-    c2 = -0.5742
-    c3 = 0.0337
+    c0 = sandu['fugacity_poly_c0']
+    c1 = sandu['fugacity_poly_c1']
+    c2 = sandu['fugacity_poly_c2']
+    c3 = sandu['fugacity_poly_c3']
 
     ln_C_OH = np.log(concentration_OH)
     ln_fugacity_H2O = c0 + (c1 * ln_C_OH) + (c2 * ln_C_OH**2) + (c3 * ln_C_OH**3)
@@ -69,12 +77,12 @@ def viscosity2(
 
     # --- Dynamic Viscosity Calculation ---
     # Rheological parameters for wet olivine dislocation creep (Sandu et al., 2011)
-    visc_reference    = 1.24e14  # eta_0 (Pa s), calibration constant
-    fugacity_exponent = 1.0      # r
-    activation_energy = 335e3    # Qa (J/mol)
+    visc_reference    = sandu['visc_reference']    # eta_0 (Pa s), calibration constant
+    fugacity_exponent = sandu['fugacity_exponent'] # r
+    activation_energy = sandu['activation_energy'] # Qa (J/mol)
     
     # Activation volume is set to 0.0, rendering pressure effects negligible in this regime
-    activation_volume = 0.0        # V (m^3/mol) 
+    activation_volume = sandu['activation_volume'] # V (m^3/mol) 
 
     # Arrhenius exponent
     arrhenius_term = np.exp((activation_energy + pressure_pa * activation_volume) / (gas_constant * temp_mantle))

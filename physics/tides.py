@@ -7,13 +7,17 @@ from TidalPy.constants import G
 
 
 def calculate_tidal_dissipation(
-            eccentricity, orbital_frequency, spin_freq_planet, spin_freq_host,
-            radius_planet, radius_host, mass_planet, mass_host,
-            temperature_planet_solid, radius_planet_core, kinematic_viscosity_solid,
-            rho_planet_solid, meltfraction_planet_solid,
-            tides_on_flag):
+        eccentricity, orbital_frequency, spin_freq_planet, spin_freq_host,
+        radius_planet, radius_host, mass_planet, mass_host,
+        temperature_planet_solid, radius_planet_core, kinematic_viscosity_solid,
+        rho_planet_solid, meltfraction_planet_solid,
+        tides_on_flag, params):
 
     if tides_on_flag:
+
+        # --- Unpack Parameters ---
+        star_tides = params['star']['tides']
+        planet_tides = params['planet']['tides']
 
         # Unpack other dependent variables
         g_p = G * mass_planet / (radius_planet**2)
@@ -26,32 +30,37 @@ def calculate_tidal_dissipation(
         moi_p = (2.0 / 5.0) * mass_planet * radius_planet**2
 
         # Tidally active region viscosity
-        tidal_scale_h = 1.0  # Amount of planet participating (full planet)
+        tidal_scale_h = star_tides['tidal_scale']  # Amount of planet participating (full planet)
         tidal_scale_p = (radius_planet - radius_planet_core) / radius_planet  # Amount of planet participating in tides (just mantle)
-        visc_h = 1.0e10  # star's viscosity (not used)
+        visc_h = star_tides['viscosity']  # star's viscosity (not used)
         visc_p = kinematic_viscosity_solid * rho_planet_solid  # the viscosity above is kinetic; we want dynamic so multiple by the layer's density.'
-        shear_mod_h = 1.0e7  # Star shear (not used)
-        shear_mod_p = 60.0e9
-        rheology_h = 'cpl'  # Constant phase lag model
-        rheology_p = 'Andrade'
-        fixed_k2_h = 0.3
-        fixed_k2_p = 0.3  # ukinematic_viscosity_solidsed for target planet due to real radius_hosteology
-        fixed_Q_h = 30000000
-        fixed_Q_p = 30000000 # ukinematic_viscosity_solidsed for target planet due to real radius_hosteology
+        shear_mod_h = star_tides['shear_modulus']  # Star shear (not used)
+        shear_mod_p = planet_tides['shear_modulus_solid']
+        rheology_h = star_tides['rheology_model']  # Constant phase lag model
+        rheology_p = planet_tides['rheology_model']
+        fixed_k2_h = star_tides['fixed_k2']
+        fixed_k2_p = planet_tides['fixed_k2']  # unused for target planet due to real rheology
+        fixed_Q_h = star_tides['fixed_Q']
+        fixed_Q_p = planet_tides['fixed_Q'] # unused for target planet due to real rheology
 
         # Partial melting parameters
-        shear_mod_p_liquid = 1.0e-5
-        crit_melt_frac = 0.5
-        crit_melt_frac_width = 0.05
+        shear_mod_p_liquid = planet_tides['shear_modulus_liquid_limit']
+        crit_melt_frac = planet_tides['crit_melt_frac']
+        crit_melt_frac_width = planet_tides['melt_transition_width']
+        
+        # Unused in original logic but left intact
         hn_visc_slope_1 = 13.5
         hn_visc_slope_2 = 370.0
-        hn_shear_param_1 = 40000.0
-        hn_shear_param_2 = 25.0
-        hn_shear_falloff_slope = 700.0
+        
+        hn_shear_param_1 = planet_tides['shear_melt_param_1']
+        hn_shear_param_2 = planet_tides['shear_melt_param_2']
+        hn_shear_falloff_slope = planet_tides['shear_melt_falloff_slope']
 
         # TODO: this should be an inverse process to find T from melt_frac via inverting get_meltfraction_planet_solidb()
         #   for now just leave it as halfway between a typical solidus and liquidus
-        break_down_temass_planet = 1420.0 + crit_melt_frac * (1825.0 - 1420.0)
+        temp_sol_ref = planet_tides['temp_solidus_ref']
+        temp_liq_ref = planet_tides['temp_liquidus_ref']
+        break_down_temass_planet = temp_sol_ref + crit_melt_frac * (temp_liq_ref - temp_sol_ref)
 
         # TODO: Handle partial melting of viscosity? Or is that handled above?
         # Handle partial melting of shear
@@ -72,8 +81,8 @@ def calculate_tidal_dissipation(
             shear_mod_p = shear_mod_p_liquid
 
         # Assume obliquity is off for now
-        obliquity_h = 0.0
-        obliquity_p = 0.0
+        obliquity_h = star_tides['obliquity']
+        obliquity_p = planet_tides['obliquity']
 
         dissipation_results = quick_dual_body_tidal_dissipation(
             radii=(radius_host, radius_planet),

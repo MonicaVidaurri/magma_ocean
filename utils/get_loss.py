@@ -10,8 +10,8 @@ def get_loss(
         semi_major_axis,
         mass_planet,
         radius_planet,
-        LStar_watts,
-        XUV_model=1):
+        stellar_luminosity,
+        params):
     """
     Calculates the XUV-driven hydrodynamic atmospheric escape fluxes of Hydrogen 
     and Oxygen, assuming a water-dominated upper atmosphere.
@@ -39,11 +39,10 @@ def get_loss(
         Mass of the planet [kg].
     radius_planet : float
         Radius of the planet [m].
-    LStar_watts : float
+    stellar_luminosity : float
         Static stellar bolometric luminosity [W]. Used for equilibrium temperature.
-    XUV_model : int, optional
-        1 = Ribas+ 2005 continuous decay model.
-        2 = Saturation then immediate zero (cutoff model). Default is 1.
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -53,40 +52,48 @@ def get_loss(
         Mass flux of oxygen escaping to space [kg/m^2/s].
     """
 
-    # --- 0. Exhaustion Check ---
+    # --- Exhaustion Check ---
     # If there is no water left in the atmosphere, hydrodynamic escape of H shuts off.
     if pressure_H2O < 1e-6:
         return 0.0, 0.0
 
-    # --- Constants & Time Conversion ---
-    G            = 6.6743e-11    # m^3/kg/s^2
-    stefan_boltz = 5.67e-8       # W/m2/K4
-    AU_meters    = 1.496e11      # m
-    avogadro     = 6.022e23      # molecules/mole
-    boltzmann    = 1.380649e-23  # J/K
-    mass_proton  = 1.6726e-27    # kg
+    # --- Unpack Parameters ---
+    c        = params['constants']
+    p        = params['planet']
+    star_xuv = params['star']['xuv']
+    esc      = params['planet']['atmosphere']['escape']
 
-    molar_mass_H = 1.008    # g/mol
-    molar_mass_O = 15.9994  # g/mol
+    # --- Constants & Time Conversion ---
+    G            = c['G']                # m^3/kg/s^2
+    stefan_boltz = c['stefan_boltzmann'] # W/m2/K4
+    avogadro     = c['avogadro']         # molecules/mole
+    boltzmann    = c['boltzmann']        # J/K
+    mass_proton  = c['mass_proton']      # kg
+
+    # The original logic uses g/mol for molecular flux equations. 
+    # We pull the MKS (kg/mol) values from TOML and convert inline to preserve the math.
+    molar_mass_H = c['molar_mass_H'] * 1000.0  # g/mol
+    molar_mass_O = c['molar_mass_O'] * 1000.0  # g/mol
     
-    sec_per_year = 3.15569e7
+    sec_per_year = c['seconds_per_year']
     
     # Convert input integration time (seconds) to years for stellar track interpolation
     t_years = t_sec / sec_per_year
 
     # --- Planetary Parameters & Energy ---
     gravity = G * mass_planet / radius_planet**2
-    albedo  = 0.25
+    albedo  = p['albedo']
     
     # Equilibrium Temperature (Escape Region Temperature Proxy)
-    flux_at_planet       = LStar_watts / (4.0 * np.pi * semi_major_axis**2)
+    flux_at_planet       = stellar_luminosity / (4.0 * np.pi * semi_major_axis**2)
     absorbed_stellar_rad = (1.0 - albedo) * flux_at_planet / 4.0
     temp_eq              = (absorbed_stellar_rad / stefan_boltz)**0.25
 
     # --- XUV Flux Evolution ---
-    f_sat              = 1e-3
-    decay_beta         = -1.23
-    heating_efficiency = 0.1
+    f_sat              = star_xuv['f_sat']
+    decay_beta         = star_xuv['decay_beta']
+    heating_efficiency = star_xuv['heating_efficiency']
+    XUV_model          = esc['xuv_model']
 
     # Fractional XUV luminosity relative to Lbol
     f_xuv = f_sat * (t_flux_years / t_sat_years)**decay_beta
@@ -98,8 +105,8 @@ def get_loss(
         # Step function: flat during saturation, zero after
         f_xuv = np.where(t_flux_years < t_sat_years, f_sat, 0.0)
 
-    # Convert relative Lbol back to Watts (3.828e26 is standard LSun)
-    luminosity_xuv_watts = f_xuv * Lbol_relative * 3.828e26
+    # Convert relative Lbol back to Watts using master solar luminosity
+    luminosity_xuv_watts = f_xuv * Lbol_relative * c['lum_sun']
     flux_xuv_orbit       = luminosity_xuv_watts / (4.0 * np.pi * semi_major_axis**2)
 
     # Interpolate to current time using the converted t_years
@@ -121,11 +128,11 @@ def get_loss(
     phi_H_ref_molecules = phi_energy_limited / (molar_mass_H * mass_proton) 
 
     # Molar fractions assuming a pure H2O source gas being dissociated
-    X_H = 2.0 / 3.0
-    X_O = 1.0 / 3.0
+    X_H = esc['source_frac_H']
+    X_O = esc['source_frac_O']
 
-    # Binary diffusion parameter (b)
-    binary_diff_coeff = 4.8e17 * (temp_escape)**0.75 * 100.0  # scaled to SI
+    # Binary diffusion parameter (b) pulled from TOML
+    binary_diff_coeff = esc['diffusion_scaling'] * (temp_escape)**0.75
 
     gamma = 1.0 / (1.0 + X_O * molar_mass_O / (X_H * molar_mass_H))
     

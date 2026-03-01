@@ -10,7 +10,8 @@ def mantleheatflux(
         gravity,
         density_mantle,
         mass_frac_water,
-        melt_fraction):
+        melt_fraction,
+        params):
     """
     Calculates the convective heat flux and boundary layer properties of the mantle 
     using parameterized Rayleigh-Bénard convection scaling.
@@ -39,6 +40,8 @@ def mantleheatflux(
         Mass fraction of water in the convecting region (dimensionless).
     melt_fraction : float
         Volume-averaged melt fraction of the convecting region (dimensionless).
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -54,15 +57,21 @@ def mantleheatflux(
         The kinematic viscosity of the convecting material (m^2/s).
     """
 
+    # --- Unpack Parameters ---
+    thermo = params['planet']['thermodynamics']
+    conv   = params['planet']['convection']
+
     # --- Thermodynamic Constants ---
-    thermal_conductivity = 4.2    # km (W/m/K)
-    thermal_expansion    = 2e-5   # alpha (1/K)
-    heat_capacity        = 1.2e3  # cp (J/kg/K)
+    thermal_conductivity = thermo['thermal_conductivity'] # km (W/m/K)
+    thermal_expansion    = thermo['thermal_expansion']    # alpha (1/K)
+    heat_capacity        = thermo['specific_heat_mantle'] # cp (J/kg/K)
 
     # --- Convective Geometry ---
-    # Rheological transition: If melt fraction > 40%, it is a fluid-supported 
+    # Rheological transition: If melt fraction > threshold, it is a fluid-supported 
     # magma ocean. Convection is restricted to the liquid layer above the solidus.
-    if melt_fraction >= 0.4:
+    melt_fraction_threshold = conv['melt_fraction_threshold']
+
+    if melt_fraction >= melt_fraction_threshold:
         depth_convective_zone = radius_planet - radius_solid
     else:
         # Solid-state convection throughout the entire mantle
@@ -73,7 +82,7 @@ def mantleheatflux(
     thermal_diffusivity = thermal_conductivity / (density_mantle * heat_capacity)
     
     # Kinematic viscosity (m^2/s)
-    kinematic_viscosity = viscosity(temp_mantle, temp_surface, density_mantle, mass_frac_water, melt_fraction)
+    kinematic_viscosity = viscosity(temp_mantle, temp_surface, density_mantle, mass_frac_water, melt_fraction, params)
 
     # --- Rayleigh Number Calculation ---
     temp_difference = abs(temp_mantle - temp_surface)
@@ -82,15 +91,15 @@ def mantleheatflux(
 
     # --- Heat Flux & Boundary Layer Parameters ---
     # Convective heat flux scaling for hard-turbulent regime (Ra^1/3)
-    nusselt_coefficient = 0.089
+    nusselt_coefficient = conv['nusselt_coefficient']
     heat_flux_mantle = nusselt_coefficient * thermal_conductivity * temp_difference * (rayleigh_number**(1.0 / 3.0)) / depth_convective_zone
 
     # Thermal boundary layer thickness via Fourier's Law of Conduction (m)
     depth_boundary_layer = thermal_conductivity * temp_difference / heat_flux_mantle
 
     # Characteristic convective spreading time (s)
-    # 5.38 is a standard geometric scaling factor for boundary layer instabilities
-    time_spreading = (depth_boundary_layer**2) / (5.38 * thermal_diffusivity)
+    spreading_factor = conv['spreading_time_factor']
+    time_spreading = (depth_boundary_layer**2) / (spreading_factor * thermal_diffusivity)
 
     # Characteristic surface spreading velocity (m/s)
     velocity_spreading = depth_convective_zone / time_spreading

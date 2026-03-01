@@ -5,7 +5,8 @@ def get_flux(
         temp_equilibrium,
         pressure_surface_pa,
         radius_planet,
-        gravity):
+        gravity,
+        params):
     """
     Calculates the net outgoing longwave thermal flux from the planet's surface 
     to space, accounting for the greenhouse effect of a water vapor atmosphere.
@@ -26,6 +27,8 @@ def get_flux(
         Radius of the planet in meters.
     gravity : float
         Surface gravitational acceleration in m/s^2.
+    params : dict
+        Main configuration dictionary containing TOML parameters.
 
     Returns
     -------
@@ -33,11 +36,15 @@ def get_flux(
         The net thermal flux leaving the surface (W/m^2). 
         Positive values indicate cooling (the surface is losing heat to space).
     """
+
+    # --- Unpack Parameters ---
+    c = params['constants']
+    atm = params['planet']['atmosphere']
     
     # --- Constants ---
-    stefan_boltzmann_const = 5.67e-8    # sigma (W/m^2/K^4)
-    absorption_coeff_water = 0.01       # k0 (m^2/kg) - Reference absorption coeff for H2O
-    pressure_reference_pa  = 1.01325e5  # p0 (Pa) - 1 bar reference pressure
+    stefan_boltzmann_const = c['stefan_boltzmann']     # sigma (W/m^2/K^4)
+    absorption_coeff_water = atm['absorption_coeff_H2O'] # k0 (m^2/kg) - Reference absorption coeff for H2O
+    pressure_reference_pa  = c['pressure_ref']         # p0 (Pa) - 1 bar reference pressure
 
     # --- Atmospheric Mass & Optical Depth ---
     surface_area = 4.0 * np.pi * radius_planet**2
