@@ -1,80 +1,76 @@
 import numpy as np
 
-def get_fO2(
-        temp_kelvin,
-        pressure_pa,
-        mole_fractions):
+def get_fO2(temp_kelvin, pressure_pa, mole_fractions, params):
     """
-    Calculates the oxygen fugacity (fO2) of a silicate melt based on its 
-    composition, temperature, and pressure using the Kress and Carmichael (1991) 
-    empirical parameterization.
+    Calculates the oxygen fugacity (fO2) of a silicate melt based on the 
+    Kress and Carmichael (1991) empirical parameterization.
     
     Parameters
     ----------
     temp_kelvin : float
-        Temperature of the silicate melt in Kelvin.
+        Mantle temperature (K).
     pressure_pa : float
-        Pressure of the environment in Pascals.
+        Local pressure (Pa).
     mole_fractions : ndarray
-        1D array of oxide mole fractions. 
-        Indices map as follows:
-        [0]  SiO2    [1]  TiO2    [2]  Al2O3
-        [3]  MgO     [4]  CaO     [5]  Na2O
-        [6]  K2O     [7]  P2O5    [8]  FeOt
-        [9]  FeO1.5  [10] FeO     [11] Fe2O3
+        1D array of oxide mole fractions.
+    params : dict
+        Master configuration dictionary containing [planet.oxygen_fugacity.kress_carmichael_1991].
 
     Returns
     -------
     fugacity_O2 : float
-        Oxygen fugacity in Pascals (linear scale).
+        Oxygen fugacity in Pascals.
     """
     
-    # --- Unpack Composition Array ---
-    # Extract only the oxides actively used in the Kress & Carmichael calibration
+    # --- Unpack Parameters & Composition ---
+    kc_params = params['planet']['oxygen_fugacity']['kress_carmichael_1991']
+    
+    # Indices: [2]Al2O3, [4]CaO, [5]Na2O, [6]K2O, [8]FeOt, [10]FeO, [11]Fe2O3
     frac_Al2O3 = mole_fractions[2]
     frac_CaO   = mole_fractions[4]
     frac_Na2O  = mole_fractions[5]
     frac_K2O   = mole_fractions[6]
     frac_FeOt  = mole_fractions[8]
-    frac_FeO   = mole_fractions[10]  # Ferrous Iron (Fe2+)
-    frac_Fe2O3 = mole_fractions[11]  # Ferric Iron (Fe3+)
+    frac_FeO   = mole_fractions[10]
+    frac_Fe2O3 = mole_fractions[11]
 
     # --- Iron Ratio ---
-    # Numerical safety: Clamp iron fractions to prevent log(0) -> -inf crashes 
-    # in perfectly reduced or perfectly oxidized extreme conditions.
+    # Numerical safety for log calculations
     safe_Fe2O3 = max(frac_Fe2O3, 1e-20)
     safe_FeO   = max(frac_FeO, 1e-20)
-    
     ln_ferric_ferrous_ratio = np.log(safe_Fe2O3 / safe_FeO)
     
-    # --- Kress & Carmichael (1991) Model Terms ---
-    # Reference Temperature (K)
-    T0 = 1673.0 
+    # --- Model Terms ---
+    T0 = kc_params['T0_ref']
     
     # Temperature dependence
-    term_temp = -1.1492e4 / temp_kelvin
-    term_const = 6.675
+    term_temp = kc_params['temp_coeff'] / temp_kelvin
+    term_const = kc_params['constant_term']
     
-    # Composition dependence (d_i coefficients)
-    term_comp = (2.243 * frac_Al2O3 + 
-                 1.828 * frac_FeOt - 
-                 3.201 * frac_CaO - 
-                 5.854 * frac_Na2O - 
-                 6.215 * frac_K2O)
+    # Composition dependence
+    # Signs are handled by the coefficients in the TOML
+    term_comp = (kc_params['coeff_Al2O3'] * frac_Al2O3 + 
+                 kc_params['coeff_FeOt']  * frac_FeOt  + 
+                 kc_params['coeff_CaO']   * frac_CaO   + 
+                 kc_params['coeff_Na2O']  * frac_Na2O  + 
+                 kc_params['coeff_K2O']   * frac_K2O)
     
     # Temperature deviation correction
-    term_temp_correction = 3.36 * (1.0 - (T0 / temp_kelvin) - np.log(temp_kelvin / T0))
+    term_temp_correction = kc_params['temp_correction_coeff'] * (
+        1.0 - (T0 / temp_kelvin) - np.log(temp_kelvin / T0)
+    )
     
-    # Pressure dependence (calibrated in Pascals)
-    term_pressure = (7.01e-7 * pressure_pa / temp_kelvin + 
-                     1.54e-10 * (temp_kelvin - T0) * pressure_pa / temp_kelvin - 
-                     3.85e-17 * (pressure_pa**2) / temp_kelvin)
+    # Pressure dependence
+    term_pressure = (
+        kc_params['press_coeff_1'] * pressure_pa / temp_kelvin + 
+        kc_params['press_coeff_2'] * (temp_kelvin - T0) * pressure_pa / temp_kelvin + 
+        kc_params['press_coeff_3'] * (pressure_pa**2) / temp_kelvin
+    )
     
-    # --- Final Fugacity Calculation ---
-    # Combine terms and scale by the empirical 'a' parameter (0.196) to isolate ln(fO2)
-    ln_fO2 = (1.0 / 0.196) * (ln_ferric_ferrous_ratio + term_temp + term_const + 
-                              term_comp + term_temp_correction + term_pressure)
+    # --- Final Fugacity ---
+    ln_fO2 = (1.0 / kc_params['scaling_a']) * (
+        ln_ferric_ferrous_ratio + term_temp + term_const + 
+        term_comp + term_temp_correction + term_pressure
+    )
     
-    fugacity_O2 = np.exp(ln_fO2)
-    
-    return fugacity_O2
+    return np.exp(ln_fO2)

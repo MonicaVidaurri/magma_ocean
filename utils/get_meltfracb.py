@@ -6,59 +6,64 @@ def get_meltfracb(
         temp_potential,
         radius_planet,
         radius_core,
-        mass_mantle):
+        mass_mantle,
+        params):
     """
     Calculates the bulk volume-averaged melt fraction of the ENTIRE mantle 
     and the pressure at the base of the deepest melt layer.
 
-    Unlike `get_meltfrac` (which averages only over the active magma ocean), 
-    this function calculates the melt fraction relative to the total mantle volume. 
-    This is required for bulk properties like whole-mantle degassing or bulk 
-    rheology in tectonic phases.
-
     Parameters
     ----------
     gravity : float
-        Surface gravitational acceleration in m/s^2.
+        Surface gravitational acceleration (m/s^2).
     temp_potential : float
-        Mantle potential temperature in Kelvin.
+        Mantle potential temperature (K).
     radius_planet : float
-        Radius of the planet in meters.
+        Radius of the planet (m).
     radius_core : float
-        Radius of the planetary core in meters.
+        Radius of the planetary core (m).
     mass_mantle : float
-        Total mass of the mantle in kg.
+        Total mass of the mantle (kg).
+    params : dict
+        Master configuration dictionary containing [planet.thermodynamics] 
+        and [numerical].
 
     Returns
     -------
     exchange_pressure_gpa : float
-        Pressure at the deepest point of melting in GPa.
+        Pressure at the deepest point of melting (GPa).
     bulk_melt_fraction : float
-        Volume-averaged melt fraction relative to the entire mantle.
+        Volume-averaged melt fraction relative to the entire mantle (0.0 to 1.0).
     """
 
-    # --- Thermodynamic Constants ---
-    thermal_expansion = 2e-5   # alpha (1/K)
-    heat_capacity     = 1.2e3  # cp (J/kg/K)
+    # --- Unpack Parameters ---
+    thermo = params['planet']['thermodynamics']
+    num    = params['numerical']
+
+    alpha = thermo['thermal_expansion']
+    cp    = thermo['heat_capacity']
+    step  = num['melt_grid_step']
 
     # --- Planet Geometry & Grid ---
     volume_mantle  = (4.0 / 3.0) * np.pi * (radius_planet**3 - radius_core**3)
     density_mantle = mass_mantle / volume_mantle
 
     # Depth grid from surface down to the Core-Mantle Boundary (CMB)
-    depths = np.arange(0, radius_planet - radius_core + 5e3, 5e3)
+    depths = np.arange(0, radius_planet - radius_core + step, step)
 
     # Hydrostatic pressure in Pascals and GPa
     pressures_pa  = gravity * density_mantle * depths
     pressures_gpa = pressures_pa / 1e9
 
     # --- Thermodynamics (Solidus & Liquidus) ---
-    temp_solidus  = np.minimum(104.42 * pressures_gpa + 1420.0, 
-                              26.53 * pressures_gpa + 1825.0)
-    temp_liquidus = temp_solidus + 600.0
+    temp_solidus = np.minimum(
+        thermo['solidus_slope_low_p'] * pressures_gpa + thermo['solidus_intercept_low_p'], 
+        thermo['solidus_slope_high_p'] * pressures_gpa + thermo['solidus_intercept_high_p']
+    )
+    temp_liquidus = temp_solidus + thermo['liquidus_offset']
 
     # Mantle adiabatic temperature profile
-    temp_adiabat  = temp_potential + temp_potential * (thermal_expansion * gravity * depths / heat_capacity)
+    temp_adiabat = temp_potential + temp_potential * (alpha * gravity * depths / cp)
 
     # --- Melt Fraction Calculation ---
     melt_fraction = np.zeros_like(depths)
@@ -66,7 +71,7 @@ def get_meltfracb(
     # Fully molten regions
     melt_fraction[temp_adiabat >= temp_liquidus] = 1.0
     
-    # Partially molten regions
+    # Partially molten regions (linear interpolation)
     partial_mask = (temp_adiabat > temp_solidus) & (temp_adiabat < temp_liquidus)
     melt_fraction[partial_mask] = (temp_adiabat[partial_mask] - temp_solidus[partial_mask]) / \
                                   (temp_liquidus[partial_mask] - temp_solidus[partial_mask])
@@ -79,7 +84,7 @@ def get_meltfracb(
 
     idx_base = idx_melt[-1]
 
-    # Exchange pressure at the first purely solid grid point below the melt
+    # Exchange pressure at the deepest point of melting
     if idx_base < len(depths) - 1:
         exchange_pressure_gpa = pressures_gpa[idx_base + 1]
     else:
@@ -88,15 +93,13 @@ def get_meltfracb(
     # --- Bulk Volume-Averaged Melt Fraction ---
     radii = radius_planet - depths
     
-    # Integrate f(z) * r^2 dz over the ENTIRE depth grid
+    # Integrate f(r) * r^2 dr over the ENTIRE depth of the mantle
+    # Note: trapezoid handles the mapping of radii over the depth grid
     integral_f_vol = trapezoid(melt_fraction * radii**2, depths)
     
-    # Exact geometric volume proxy for the entire mantle (divided by 4/3 pi)
+    # Exact geometric volume proxy for the entire mantle (V / 4pi)
     volume_mantle_proxy = (radius_planet**3 - radius_core**3) / 3.0
 
-    bulk_melt_fraction  = integral_f_vol / volume_mantle_proxy
+    bulk_melt_fraction = integral_f_vol / volume_mantle_proxy
     
-    # Final numerical safety clamp
-    bulk_melt_fraction  = min(bulk_melt_fraction, 1.0)
-
-    return exchange_pressure_gpa, bulk_melt_fraction
+    return exchange_pressure_gpa, min(bulk_melt_fraction, 1.0)
