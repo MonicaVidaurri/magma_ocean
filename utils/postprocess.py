@@ -186,7 +186,6 @@ def postprocess_magma_ocean(
     t3_sec = sol3.t
     Tr3    = sol3.y
     
-    # In Phase 3: Tr3[5] is atm water, Tr3[6] is atm oxygen
     Patm_3 = Tr3[5, :] * gp / surface_area
     PO2_3  = Tr3[6, :] * gp / surface_area
 
