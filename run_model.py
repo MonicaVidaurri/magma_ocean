@@ -57,6 +57,8 @@ with open("baseline_config.toml", "rb") as f:
 simulation_config = 'trappist1e'
 with open(f'{simulation_config}.toml', "rb") as f:
     specific_params = tomllib.load(f)
+simulation_version = specific_params['simulation']['version']
+save_name = f'{simulation_config}_{simulation_version}'
 
 # Merge Params: the specific_config will override defaults from baseline_config.
 params = merge_dicts(specific_params, params)
@@ -328,6 +330,9 @@ Q_tidal = np.concatenate([results['phase1']['Q_tid'], results['phase2']['Q_tid']
 Q_radiogenic = np.concatenate([results['phase1']['Q_rad'], results['phase2']['Q_rad'], results['phase3']['Q_rad']])
 print(f"Total Radiogenic Heating = {np.sum(Q_radiogenic)/1e12:0.3e} TW.")
 print(f"Total Tidal Heating = {np.sum(Q_tidal)/1e12:0.3e} TW.")
+tidal_scale = np.concatenate([results['phase1']['tidal_scale'], results['phase2']['tidal_scale'], results['phase3']['tidal_scale']])
+tidal_shear = np.concatenate([results['phase1']['tidal_shear'], results['phase2']['tidal_shear'], results['phase3']['tidal_shear']])
+tidal_visc = np.concatenate([results['phase1']['tidal_visc'], results['phase2']['tidal_visc'], results['phase3']['tidal_visc']])
 
 # Save to CSV
 df_results = pd.DataFrame({
@@ -368,6 +373,7 @@ def plot_magma_ocean():
     ax_tmp.legend(loc='lower left')
     ax_tmp.grid(True)
     fig_tmp.tight_layout()
+    fig_tmp.savefig(f"{save_name}_temperature_heat.png")
 
     # Atmosphere Plot
     fig_atm, ax_atm = plt.subplots(figsize=(8, 5))
@@ -383,6 +389,7 @@ def plot_magma_ocean():
     ax_atm.legend()
     ax_atm.grid(True)
     fig_atm.tight_layout()
+    fig_atm.savefig(f"{save_name}_atmosphere.png")
 
     # Orbit Plot
     fig_orb, ax_orb = plt.subplots(figsize=(8, 5))
@@ -405,6 +412,7 @@ def plot_magma_ocean():
     ax_orb.tick_params(axis='y', colors='red')
     ax2_orb.tick_params(axis='y', colors='blue')
     fig_orb.tight_layout()
+    fig_orb.savefig(f"{save_name}_orbit.png")
 
     # Spin Plot
     spin_host_period = (2 * np.pi / spin_host_tot) / 86400.0
@@ -423,6 +431,49 @@ def plot_magma_ocean():
     ax_spin.grid(True)
     ax_spin.legend()
     fig_spin.tight_layout()
+    fig_spin.savefig(f"{save_name}_spin.png")
+
+    # Tidal Susceptibility Plot
+    fig_susp, ax_susp = plt.subplots(figsize=(8, 5))
+    # We need to make extra room on the left for the second y-axis
+    fig_susp.subplots_adjust(left=0.25)
+    ax_susp.plot(t_tot_years, tidal_shear/1e9, color='red')
+    ax_spin.set_xlabel('Time [yr]')
+    ax_susp.set_ylabel('Shear Modulus [GPa]', color='red')
+    ax_susp.set_yscale('linear')
+    ax_susp.set_xscale('log')
+    ax_visc = ax_susp.twinx()
+    # Move the ticks and label to the left side
+    ax_visc.yaxis.set_ticks_position('left')
+    ax_visc.yaxis.set_label_position('left')
+    # Offset the spine outward by 20% of the axes width so it doesn't overlap Axis 1
+    ax_visc.spines['left'].set_position(('axes', -0.2))
+    ax_visc.spines['left'].set_visible(True) # Required because twinx hides the left spine by default
+    # Plot and color
+    ax_visc.plot(t_tot_years, tidal_visc, color='blue')
+    ax_visc.set_ylabel('Viscosity', color='blue')
+    ax_susp.set_yscale('log')
+    ax_visc.tick_params(axis='y', labelcolor='blue')
+    ax_visc.spines['left'].set_color('blue')
+    # Optional: Hide the right spine on ax_visc to keep things clean
+    ax_visc.spines['right'].set_visible(False)
+    # Color the ticks and the spine
+    ax_susp.tick_params(axis='y', labelcolor='red')
+    ax_susp.spines['left'].set_color('red')
+    # Create another axis that shares the same x-axis
+    ax_tidal = ax_susp.twinx()
+    # Plot and color (default twinx behavior puts this on the right)
+    ax_tidal.plot(t_tot_years, tidal_scale * 100, color='green')
+    ax_tidal.set_ylabel('Tidal Scale [%]', color='green')
+    ax_tidal.tick_params(axis='y', labelcolor='green')
+    ax_tidal.spines['right'].set_color('green')
+    ax_susp.set_yscale('linear')
+    ax_susp.set_title('Tidal Susceptibility Evolution')
+    ax_susp.grid(True)
+    ax_susp.axvline(x=sol1.t[-1]/constants['seconds_per_year'], ls=':', c=phase_line_color)
+    ax_susp.axvline(x=sol2.t[-1]/constants['seconds_per_year'], ls='-.', c=phase_line_color)
+    fig_susp.tight_layout()
+    fig_susp.savefig(f"{save_name}_tidal_suscept.png")
     
     plt.show()
 

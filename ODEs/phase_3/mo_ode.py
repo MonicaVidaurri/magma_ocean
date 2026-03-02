@@ -100,9 +100,11 @@ def moODE_phase3(
         temp_mantle, temp_surface, Rp, Rp, Rc, g, rho_mantle, FH2O, meltfrac, params
     )
 
-    da_dt, de_dt, dspin_dt_h, dspin_dt_p, _, tidal_heating_p = calculate_tidal_dissipation(
+    # In this phase all of the mantle is at least semi-solid
+    radius_solid = Rp
+    da_dt, de_dt, dspin_dt_h, dspin_dt_p, _, tidal_heating_p, _, _, _ = calculate_tidal_dissipation(
         eccentricity, orbital_freq, spin_freq_p, spin_freq_h, Rp, Rh, Mp, Mh,
-        temp_mantle, Rc, nu, rho_mantle, meltfrac, tides_on_flag, params
+        temp_mantle, Rc, nu, rho_mantle, meltfrac, radius_solid, tides_on_flag, params
     )
 
     # =====================================================================

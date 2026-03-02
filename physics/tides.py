@@ -11,13 +11,22 @@ def calculate_tidal_dissipation(
         radius_planet, radius_host, mass_planet, mass_host,
         temperature_planet_solid, radius_planet_core, kinematic_viscosity_solid,
         rho_planet_solid, meltfraction_planet_solid,
+        solid_radius_p,
         tides_on_flag, params):
 
-    if tides_on_flag:
+    # --- Unpack Parameters ---
+    star_tides = params['star']['tides']
+    planet_tides = params['planet']['tides']
 
-        # --- Unpack Parameters ---
-        star_tides = params['star']['tides']
-        planet_tides = params['planet']['tides']
+    # --- Find Tidal Scales ---
+    tidal_scale_h = star_tides['tidal_scale']  # Amount of planet participating (full planet)
+    # Amount of planet participating in tides (just mantle)
+    volume_planet = (4.0 / 3.0) * np.pi * radius_planet**3
+    volume_solid_mantle_p = (4.0 / 3.0) * np.pi * (solid_radius_p**3 - radius_planet_core**3)
+
+    tidal_scale_p = volume_solid_mantle_p / volume_planet
+    
+    if tides_on_flag:
 
         # Unpack other dependent variables
         g_p = G * mass_planet / (radius_planet**2)
@@ -30,8 +39,6 @@ def calculate_tidal_dissipation(
         moi_p = (2.0 / 5.0) * mass_planet * radius_planet**2
 
         # Tidally active region viscosity
-        tidal_scale_h = star_tides['tidal_scale']  # Amount of planet participating (full planet)
-        tidal_scale_p = (radius_planet - radius_planet_core) / radius_planet  # Amount of planet participating in tides (just mantle)
         visc_h = star_tides['viscosity']  # star's viscosity (not used)
         visc_p = kinematic_viscosity_solid * rho_planet_solid  # the viscosity above is kinetic; we want dynamic so multiple by the layer's density.'
         shear_mod_h = star_tides['shear_modulus']  # Star shear (not used)
@@ -121,6 +128,8 @@ def calculate_tidal_dissipation(
         dspin_dt_p      = 0.0
         tidal_heating_h = 0.0
         tidal_heating_p = 0.0
+        shear_mod_p = np.nan
+        visc_p      = np.nan
     
     return (
         da_dt,
@@ -128,5 +137,8 @@ def calculate_tidal_dissipation(
         dspin_dt_h,
         dspin_dt_p,
         tidal_heating_h,
-        tidal_heating_p
+        tidal_heating_p,
+        tidal_scale_p,
+        shear_mod_p,
+        visc_p
     )

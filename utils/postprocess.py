@@ -118,6 +118,9 @@ def postprocess_magma_ocean(
     phi_O    = np.zeros(n1)
     Q_rad_1  = np.zeros(n1)
     Q_tid_1  = np.zeros(n1)
+    tidal_scale_1 = np.zeros(n1)
+    tidal_shear_1 = np.zeros(n1)
+    tidal_visc_1  = np.zeros(n1)
 
     for i in range(n1):
         temp_mantle = Tr1[4, i]
@@ -185,9 +188,9 @@ def postprocess_magma_ocean(
             temp_mantle, temp_surface, radius_solid, Rp, Rc, gp, rho_mantle, mass_frac_water_melt, meltfrac[i], params
         )
         orbital_freq = semi_a2orbital_motion(Tr1[0, i], Mh, Mp)
-        _, _, _, _, _, Q_tid_1[i] = calculate_tidal_dissipation(
+        _, _, _, _, _, Q_tid_1[i], tidal_scale_1[i], tidal_shear_1[i], tidal_visc_1[i] = calculate_tidal_dissipation(
             Tr1[1, i], orbital_freq, Tr1[3, i], Tr1[2, i], Rp, Rh, Mp, Mh,
-            temp_mantle, Rc, nu, rho_mantle, meltfrac[i], tides_on_flag, params
+            temp_mantle, Rc, nu, rho_mantle, meltfrac[i], radius_solid, tides_on_flag, params
         )
 
     # --- Phase 1 Global Balances ---
@@ -218,6 +221,9 @@ def postprocess_magma_ocean(
     
     Q_rad_2 = np.zeros(n2)
     Q_tid_2 = np.zeros(n2)
+    tidal_scale_2 = np.zeros(n2)
+    tidal_shear_2 = np.zeros(n2)
+    tidal_visc_2  = np.zeros(n2)
     
     for i in range(n2):
         temp_mantle = Tr2[4, i]
@@ -234,9 +240,11 @@ def postprocess_magma_ocean(
             temp_mantle, temp_surface, Rp, Rp, Rc, gp, rho_mantle, mass_frac_water_solid, mf2, params
         )
         orbital_freq = semi_a2orbital_motion(Tr2[0, i], Mh, Mp)
-        _, _, _, _, _, Q_tid_2[i] = calculate_tidal_dissipation(
+        # In this phase all of the mantle is at least semi-solid
+        radius_solid = Rp
+        _, _, _, _, _, Q_tid_2[i], tidal_scale_2[i], tidal_shear_2[i], tidal_visc_2[i] = calculate_tidal_dissipation(
             Tr2[1, i], orbital_freq, Tr2[3, i], Tr2[2, i], Rp, Rh, Mp, Mh,
-            temp_mantle, Rc, nu2, rho_mantle, mf2, tides_on_flag, params
+            temp_mantle, Rc, nu2, rho_mantle, mf2, radius_solid, tides_on_flag, params
         )
 
 
@@ -253,6 +261,9 @@ def postprocess_magma_ocean(
     
     Q_rad_3 = np.zeros(n3)
     Q_tid_3 = np.zeros(n3)
+    tidal_scale_3 = np.zeros(n3)
+    tidal_shear_3 = np.zeros(n3)
+    tidal_visc_3  = np.zeros(n3)
     
     # Water in solid mantle stays constant through Phase 3, inherited from end of Phase 2
     FH2O3 = sol2.y[5, -1] / Mmantle
@@ -271,9 +282,11 @@ def postprocess_magma_ocean(
             temp_mantle, temp_surface, Rp, Rp, Rc, gp, rho_mantle, FH2O3, mf3, params
         )
         orbital_freq = semi_a2orbital_motion(Tr3[0, i], Mh, Mp)
-        _, _, _, _, _, Q_tid_3[i] = calculate_tidal_dissipation(
+        # In this phase all of the mantle is at least semi-solid
+        radius_solid = Rp
+        _, _, _, _, _, Q_tid_3[i], tidal_scale_3[i], tidal_shear_3[i], tidal_visc_3[i] = calculate_tidal_dissipation(
             Tr3[1, i], orbital_freq, Tr3[3, i], Tr3[2, i], Rp, Rh, Mp, Mh,
-            temp_mantle, Rc, nu3, rho_mantle, mf3, tides_on_flag, params
+            temp_mantle, Rc, nu3, rho_mantle, mf3, radius_solid, tides_on_flag, params
         )
 
 
@@ -288,14 +301,17 @@ def postprocess_magma_ocean(
             'fo2': fo2, 'phi_H': phi_H, 'phi_O': phi_O, 'H2Olost': H2O_lost_kg, 
             'Ogained': O_gained_kg, 'totalO_theoretical': theoretical_total_O,
             'totalO_actual': actual_total_O,
-            'Q_rad': Q_rad_1, 'Q_tid': Q_tid_1
+            'Q_rad': Q_rad_1, 'Q_tid': Q_tid_1,
+            'tidal_scale': tidal_scale_1, 'tidal_shear': tidal_shear_1, 'tidal_visc': tidal_visc_1
         },
         'phase2': {
             't': t2_sec, 'Tr': Tr2, 'PO2': PO2_2, 'Patm': Patm_2,
-            'Q_rad': Q_rad_2, 'Q_tid': Q_tid_2
+            'Q_rad': Q_rad_2, 'Q_tid': Q_tid_2,
+            'tidal_scale': tidal_scale_2, 'tidal_shear': tidal_shear_2, 'tidal_visc': tidal_visc_2
         },
         'phase3': {
             't': t3_sec, 'Tr': Tr3, 'PO2': PO2_3, 'Patm': Patm_3,
-            'Q_rad': Q_rad_3, 'Q_tid': Q_tid_3
+            'Q_rad': Q_rad_3, 'Q_tid': Q_tid_3,
+            'tidal_scale': tidal_scale_3, 'tidal_shear': tidal_shear_3, 'tidal_visc': tidal_visc_3
         }
     }
