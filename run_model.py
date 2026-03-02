@@ -57,11 +57,11 @@ with open("baseline_config.toml", "rb") as f:
 simulation_config = 'trappist1e'
 with open(f'{simulation_config}.toml', "rb") as f:
     specific_params = tomllib.load(f)
-simulation_version = specific_params['simulation']['version']
-save_name = f'{simulation_config}_{simulation_version}'
 
 # Merge Params: the specific_config will override defaults from baseline_config.
 params = merge_dicts(specific_params, params)
+simulation_version = params['simulation']['version']
+save_name = f'{simulation_config}_{simulation_version}'
 
 # Load stellar and OLR data
 stellar = pd.read_csv('data/solardata.txt', sep='\t')

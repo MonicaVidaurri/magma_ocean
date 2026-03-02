@@ -2,7 +2,7 @@
 # TRAPPIST-1e Configuration File
 # ==============================================================================
 [simulation]
-version = "0.1"  # simulation version just for tracking changes.
+version = "0.2"  # simulation version just for tracking changes.
 # Primary numerical solver and integration settings
 method = "BDF"
 rtol = 1.0e-7
