@@ -69,21 +69,29 @@ def moODE_phase2(
     # --- Atmospheric Pressures ---
     # =====================================================================
     if temp_surface > crit_temp_water:
-        pressure_atm = mass_water_atm * g / surface_area
+        pressure_H2O = mass_water_atm * g / surface_area
     else:
-        pressure_atm = 10 ** (vapor_a - vapor_b / temp_surface) * 1e5
-        if (pressure_atm * surface_area / g) > mass_water_atm:
-            pressure_atm = mass_water_atm * g / surface_area
+        pressure_H2O = 10 ** (vapor_a - vapor_b / temp_surface) * 1e5
+        if (pressure_H2O * surface_area / g) > mass_water_atm:
+            pressure_H2O = mass_water_atm * g / surface_area
 
     pressure_O2 = mass_oxygen_atm * g / surface_area
 
     # =====================================================================
     # --- Energy Fluxes & Loss Rates ---
     # =====================================================================
-    flux_to_space = get_flux(temp_surface, Teq, pressure_atm, Rp, g, params)
+    flux_to_space = get_flux(
+        temp_surface,
+        Teq, 
+        pressure_H2O,
+        pressure_O2,
+        Rp,
+        g,
+        params
+    )
     
     flux_loss_H, flux_loss_O = get_loss(
-        t_flux, Lbol, t_sec, pressure_O2, pressure_atm, tsat, semi_a, Mp, Rp, LStar, params
+        t_flux, Lbol, t_sec, pressure_O2, pressure_H2O, tsat, semi_a, Mp, Rp, LStar, params
     )
     
     radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
@@ -124,7 +132,7 @@ def moODE_phase2(
     # Surface Thermal Properties
     net_surface_power = surface_area * (q_mantle - flux_to_space)
     
-    heat_cap_atm   = heat_capacity_water * (pressure_atm * surface_area / g)
+    heat_cap_atm   = heat_capacity_water * (pressure_H2O * surface_area / g)
     heat_cap_crust = heat_capacity_mantle * density_crust * ((4.0 / 3.0) * np.pi * (Rp**3 - (Rp - Db)**3))
     total_surface_heat_capacity = heat_cap_atm + heat_cap_crust
 

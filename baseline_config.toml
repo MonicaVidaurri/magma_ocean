@@ -238,6 +238,7 @@ temp_liquidus_ref = 1825.0          # Baseline for temperature transition calcul
 [planet.atmosphere]
 # Radiative properties
 absorption_coeff_H2O = 0.01         # Reference absorption coefficient for water vapor (m^2/kg)
+absorption_coeff_O2 = 1.0e-5        # Reference absorption coefficient for oxygen (m^2/kg) O2 is a weak greenhouse gas (Collision-Induced Absorption / Rayleigh scattering) 
 kappa_ir = 1.0e-5                   # Gray infrared absorption coefficient (m^2/kg)
 cos_theta = 0.5                     # Diffusivity factor (mu) for two-stream approximation
 

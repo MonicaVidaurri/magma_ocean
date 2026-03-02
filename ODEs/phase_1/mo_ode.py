@@ -96,16 +96,16 @@ def moODE_phase1(
     # --- Atmospheric Pressures ---
     # =====================================================================
     if mass_water_mo_atm > 0.0:
-        pressure_atm, mass_frac_water_melt, partition_coeff_H2O = get_pressure2(
+        pressure_H2O, mass_frac_water_melt, partition_coeff_H2O = get_pressure2(
             temp_mantle, radius_solid, mass_magma_ocean, Mmantle, Rp, g, Rc, mass_water_mo_atm, params
         )
     else:
-        pressure_atm = 0.0
+        pressure_H2O = 0.0
         partition_coeff_H2O = 0.0
 
     if mass_oxygen_mo_atm > 0.0:
         pressure_O2, mass_frac_FeO1_5, _, _ = get_massbalance4(
-            temp_mantle, pressure_atm, mass_magma_ocean, mass_oxygen_mo_atm, Xi, FeOt, g, Rp, params
+            temp_mantle, pressure_H2O, mass_magma_ocean, mass_oxygen_mo_atm, Xi, FeOt, g, Rp, params
         )
         if pressure_O2 < 0.0:
             pressure_O2 = mass_oxygen_mo_atm * g / surface_area
@@ -117,10 +117,18 @@ def moODE_phase1(
     # =====================================================================
     # --- Energy Fluxes & Loss Rates ---
     # =====================================================================
-    flux_to_space = get_flux(temp_surface, Teq, pressure_atm, Rp, g, params)
+    flux_to_space = get_flux(
+        temp_surface,
+        Teq, 
+        pressure_H2O,
+        pressure_O2,
+        Rp,
+        g,
+        params
+    )
     
     flux_loss_H, flux_loss_O = get_loss(
-        t_flux, Lbol, t_sec, pressure_O2, pressure_atm, tsat, semi_a, Mp, Rp, LStar, params
+        t_flux, Lbol, t_sec, pressure_O2, pressure_H2O, tsat, semi_a, Mp, Rp, LStar, params
     )
     
     radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
@@ -168,7 +176,7 @@ def moODE_phase1(
     # Surface Thermal Properties
     net_surface_power = surface_area * (q_mantle - flux_to_space)
     
-    heat_cap_atm   = heat_capacity_water * (pressure_atm * surface_area / g)
+    heat_cap_atm   = heat_capacity_water * (pressure_H2O * surface_area / g)
     heat_cap_crust = heat_capacity_mantle * density_crust * ((4.0 / 3.0) * np.pi * (Rp**3 - (Rp - Db)**3))
     total_surface_heat_capacity = heat_cap_atm + heat_cap_crust
 

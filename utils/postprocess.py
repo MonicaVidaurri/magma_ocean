@@ -142,7 +142,15 @@ def postprocess_magma_ocean(
             Patm[i] = 0.0
 
         # Radiative Flux
-        flux_arr[i]  = get_flux(temp_surface, Teq, Patm[i], Rp, gp, params)
+        flux_arr[i] = get_flux(
+            temp_surface,
+            Teq, 
+            Patm[i],  # Patm[i] is misleading; it is just the water vapour pressure not full atmo. 
+            PO2[i],
+            Rp,
+            gp,
+            params
+        )
 
         # Oxygen Partitioning
         mass_oxygen_mo_atm = Tr1[8, i]
