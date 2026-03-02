@@ -210,6 +210,10 @@ sol1 = monitor_ode(phase1_ode, t_span=(start_time_sec, end_time_sec), y0=Tr0,
                    scaler=scaler_phase1, events=[moEvent_phase1], 
                    rtol=integration_rtol, atol=integration_atol)
 
+print("Phase 1 Results:")
+print(f"\t Success  = {sol1.success}.")
+print(f"\t End time = {sol1.t[-1] / constants['seconds_per_year']:0.3e} Years.")
+
 #########################################
 # Phase 2 - Solidification
 #########################################
@@ -260,7 +264,9 @@ sol2 = monitor_ode(phase2_ode, t_span=(sol1.t[-1], end_time_sec), y0=Tr0_2,
                    phase_name='Phase 2', method=integration_method, 
                    scaler=scaler_phase2, events=[phase2_event], 
                    rtol=integration_rtol, atol=integration_atol)
-
+print("Phase 2 Results:")
+print(f"\t Success  = {sol2.success}.")
+print(f"\t End time = {sol2.t[-1] / constants['seconds_per_year']:0.3e} Years.")
 
 #########################################
 # Phase 3 - Sub-solidus Tectonics
@@ -288,6 +294,9 @@ sol3 = monitor_ode(phase3_ode, t_span=(sol2.t[-1], end_time_sec), y0=Tr0_3,
                    phase_name='Phase 3', method=integration_method, 
                    scaler=scaler_phase3, events=None, 
                    rtol=integration_rtol, atol=integration_atol)
+print("Phase 3 Results:")
+print(f"\t Success  = {sol3.success}.")
+print(f"\t End time = {sol3.t[-1] / constants['seconds_per_year']:0.3e} Years.")
 
 #==========================================================================
 # Post-processing & Output
