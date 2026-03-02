@@ -25,6 +25,9 @@ def calculate_tidal_dissipation(
     volume_solid_mantle_p = (4.0 / 3.0) * np.pi * (solid_radius_p**3 - radius_planet_core**3)
 
     tidal_scale_p = volume_solid_mantle_p / volume_planet
+
+    # --- Find Tidal Viscosity ---
+    visc_p = kinematic_viscosity_solid * rho_planet_solid  # the viscosity above is kinetic; we want dynamic so multiple by the layer's density.'
     
     if tides_on_flag:
 
@@ -40,7 +43,6 @@ def calculate_tidal_dissipation(
 
         # Tidally active region viscosity
         visc_h = star_tides['viscosity']  # star's viscosity (not used)
-        visc_p = kinematic_viscosity_solid * rho_planet_solid  # the viscosity above is kinetic; we want dynamic so multiple by the layer's density.'
         shear_mod_h = star_tides['shear_modulus']  # Star shear (not used)
         shear_mod_p = planet_tides['shear_modulus_solid']
         rheology_h = star_tides['rheology_model']  # Constant phase lag model
@@ -129,7 +131,6 @@ def calculate_tidal_dissipation(
         tidal_heating_h = 0.0
         tidal_heating_p = 0.0
         shear_mod_p = np.nan
-        visc_p      = np.nan
     
     return (
         da_dt,

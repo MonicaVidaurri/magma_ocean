@@ -1,64 +1,28 @@
 import numpy as np
 
+
 class StateScaler:
-    def __init__(self, phase, a0, Rp, M_ocean):
+    def __init__(self, a0, Rp, M_ocean):
         """
-        Initializes the dimensionless scaling arrays based on the ODE phase.
-        
-        Parameters:
-        phase (int): 1, 2, or 3 corresponding to the ODE phase.
-        a0 (float): Initial semi-major axis (meters).
-        Rp (float): Planet radius (meters).
-        M_ocean (float): Initial total water inventory (kg).
+        Initializes the dimensionless scaling arrays for the Unified ODE.
         """
         # Characteristic Time: 1 Megayear (in seconds)
         self.t_scale = 3.15569e13  
         
-        if phase == 1:
-            # 11 Dependent Variables
-            self.y_scales = np.array([
-                a0,          # 0: Semi-major axis [m]
-                1.0,         # 1: Eccentricity [n/a]
-                1e-5,        # 2: Star Spin Rate [rad/s]
-                1e-5,        # 3: Planet Spin Rate [rad/s]
-                1000.0,      # 4: Mantle Temp [K]
-                Rp,          # 5: Solid Radius [m]
-                M_ocean,     # 6: Mass Water (Solid) [kg]
-                M_ocean,     # 7: Mass Water (MO/Atm) [kg]
-                M_ocean,     # 8: Mass Oxygen (MO/Atm) [kg]
-                M_ocean,     # 9: Mass Oxygen (Solid) [kg]
-                1000.0       # 10: Surface Temp [K]
-            ], dtype=np.float64)
-            
-        elif phase == 2:
-            # 9 Dependent Variables
-            self.y_scales = np.array([
-                a0,          # 0: Semi-major axis [m]
-                1.0,         # 1: Eccentricity [n/a]
-                1e-5,        # 2: Star Spin Rate [rad/s]
-                1e-5,        # 3: Planet Spin Rate [rad/s]
-                1000.0,      # 4: Mantle Temp [K]
-                M_ocean,     # 5: Mass Water (Mantle) [kg]
-                M_ocean,     # 6: Mass Water (Atm) [kg]
-                M_ocean,     # 7: Mass Oxygen (Atm) [kg]
-                1000.0       # 8: Surface Temp [K]
-            ], dtype=np.float64)
-            
-        elif phase == 3:
-            # 8 Dependent Variables
-            self.y_scales = np.array([
-                a0,          # 0: Semi-major axis [m]
-                1.0,         # 1: Eccentricity [n/a]
-                1e-5,        # 2: Star Spin Rate [rad/s]
-                1e-5,        # 3: Planet Spin Rate [rad/s]
-                1000.0,      # 4: Mantle Temp [K]
-                M_ocean,     # 5: Mass Water (Atm) [kg]
-                M_ocean,     # 6: Mass Oxygen (Atm) [kg]
-                1000.0       # 7: Surface Temp [K]
-            ], dtype=np.float64)
-            
-        else:
-            raise ValueError("Phase must be 1, 2, or 3.")
+        # 11 Dependent Variables for the unified state vector
+        self.y_scales = np.array([
+            a0,          # 0: Semi-major axis [m]
+            1.0,         # 1: Eccentricity [n/a]
+            1e-5,        # 2: Star Spin Rate [rad/s]
+            1e-5,        # 3: Planet Spin Rate [rad/s]
+            1000.0,      # 4: Mantle Temp [K]
+            Rp,          # 5: Solid Radius [m]
+            M_ocean,     # 6: Mass Water (Solid) [kg]
+            M_ocean,     # 7: Mass Water (MO/Atm) [kg]
+            M_ocean,     # 8: Mass Oxygen (MO/Atm) [kg]
+            M_ocean,     # 9: Mass Oxygen (Solid) [kg]
+            1000.0       # 10: Surface Temp [K]
+        ], dtype=np.float64)
 
     def wrap_ode(self, physics_ode):
         """Wraps the physical ODE to handle non-dimensional IO."""
@@ -71,7 +35,6 @@ class StateScaler:
             dydt_dim = physics_ode(t_sec, y_dim, *args, **kwargs)
             
             # 3. Non-dimensionalize derivatives for the solver
-            # dy_nondim / dt_nondim = (dy_dim / y_scale) * (t_scale / dt_sec)
             dydt_nondim = dydt_dim * (self.t_scale / self.y_scales)
             
             return dydt_nondim

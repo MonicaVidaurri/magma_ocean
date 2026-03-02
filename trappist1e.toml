@@ -2,11 +2,11 @@
 # TRAPPIST-1e Configuration File
 # ==============================================================================
 [simulation]
-version = "0.2"  # simulation version just for tracking changes.
+version = "0.4"  # simulation version just for tracking changes.
 # Primary numerical solver and integration settings
 method = "BDF"
-rtol = 1.0e-7
-atol = 1.0e-10
+rtol = 1.0e-6
+atol = 1.0e-8
 start_time_years = 1.0
 end_time_years = 8.0e9
 tides_on = false

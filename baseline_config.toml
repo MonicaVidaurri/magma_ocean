@@ -178,6 +178,8 @@ solidus_intercept_low_p = 1420.0    # Solidus intercept (low pressure)
 solidus_slope_high_p = 26.53        # dT/dP slope (high pressure)
 solidus_intercept_high_p = 1825.0   # Solidus intercept (high pressure)
 
+latent_heat_vaporization = 2.26e6   # Latent heat of vaporization for water [J/kg]
+
 [planet.volatiles]
 partition_coeff_H2O = 0.01          # Distribution coefficient between solid and melt
 solubility_coeff_H2O = 3.44e-8      # Empirical pre-exponential 's'
