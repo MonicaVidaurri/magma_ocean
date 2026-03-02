@@ -325,7 +325,7 @@ surf_T_tot = np.concatenate([sol1.y[10,:], sol2.y[8,:], sol3.y[7,:]])
 PO2_tot = np.concatenate([results['phase1']['PO2'], results['phase2']['PO2'], results['phase3']['PO2']])
 Patm_tot = np.concatenate([results['phase1']['Patm'], results['phase2']['Patm'], results['phase3']['Patm']])
 Q_tidal = np.concatenate([results['phase1']['Q_tid'], results['phase2']['Q_tid'], results['phase3']['Q_tid']])
-Q_radiogenic = np.concatenate([results['phase1']['Q_tid'], results['phase2']['Q_tid'], results['phase3']['Q_tid']])
+Q_radiogenic = np.concatenate([results['phase1']['Q_rad'], results['phase2']['Q_rad'], results['phase3']['Q_rad']])
 print(f"Total Radiogenic Heating = {np.sum(Q_radiogenic)/1e12:0.3e} TW.")
 print(f"Total Tidal Heating = {np.sum(Q_tidal)/1e12:0.3e} TW.")
 
@@ -344,6 +344,10 @@ df_results.to_csv('results.txt', sep='\t', index=False)
 def plot_magma_ocean():
     phase_line_color = 'k'
 
+    # Adjust heating so it can be log plotted.
+    Q_tidal[Q_tidal == 0.0] = np.nan
+    Q_radiogenic[Q_radiogenic == 0.0] = np.nan
+
     # Temperature Plot
     fig_tmp, ax_tmp = plt.subplots(figsize=(8, 5))
     ax_tmp.plot(t_tot_years, mantle_T_tot, label='Mantle T', color='black')
@@ -352,7 +356,7 @@ def plot_magma_ocean():
     ax_tmp.set_ylabel('Temperature [K]')
     ax_tmp.set_title('Mantle and Surface Temperature Evolution')
     ax_tmp.set_xscale('log')
-    ax_tmp.set_yscale('log')
+    ax_tmp.set_yscale('linear')
     ax_heat = ax_tmp.twinx()
     ax_tmp.axvline(x=sol1.t[-1]/constants['seconds_per_year'], ls=':', c=phase_line_color)
     ax_tmp.axvline(x=sol2.t[-1]/constants['seconds_per_year'], ls='-.', c=phase_line_color)
@@ -360,8 +364,8 @@ def plot_magma_ocean():
     ax_heat.plot(t_tot_years, Q_radiogenic/1e12, label='Radiogenic', color='green')
     ax_heat.set_yscale('log')
     ax_heat.set_ylabel('Heating [TW]')
-    ax_heat.legend()
-    ax_tmp.legend()
+    ax_heat.legend(loc='lower right')
+    ax_tmp.legend(loc='lower left')
     ax_tmp.grid(True)
     fig_tmp.tight_layout()
 
@@ -393,8 +397,8 @@ def plot_magma_ocean():
     ax2_orb.spines['right'].set_color('blue')
     ax_orb.set_title('Orbital Evolution')
     ax_orb.set_xscale('log')
-    ax_orb.set_yscale('log')
-    ax2_orb.set_yscale('log')
+    ax_orb.set_yscale('linear')
+    ax2_orb.set_yscale('linear')
     ax_orb.axvline(x=sol1.t[-1]/constants['seconds_per_year'], ls=':', c=phase_line_color)
     ax_orb.axvline(x=sol2.t[-1]/constants['seconds_per_year'], ls='-.', c=phase_line_color)
     ax_orb.grid(True)
@@ -413,7 +417,7 @@ def plot_magma_ocean():
     ax_spin.set_ylabel('Spin Period [days]')
     ax_spin.set_title('Spin Evolution')
     ax_spin.set_xscale('log')
-    ax_spin.set_yscale('log')
+    ax_spin.set_yscale('linear')
     ax_spin.axvline(x=sol1.t[-1]/constants['seconds_per_year'], ls=':', c=phase_line_color)
     ax_spin.axvline(x=sol2.t[-1]/constants['seconds_per_year'], ls='-.', c=phase_line_color)
     ax_spin.grid(True)
