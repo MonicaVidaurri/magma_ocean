@@ -239,8 +239,8 @@ def plot_magma_ocean():
     ax_heat.plot(t_tot_years, Q_radiogenic/1e12, label='Radiogenic', color='green')
     ax_heat.set_yscale('log')
     ax_heat.set_ylabel('Heating [TW]')
-    ax_heat.legend(loc='lower right')
-    ax_tmp.legend(loc='lower left')
+    ax_heat.legend(loc='center right')
+    ax_tmp.legend(loc='center left')
     ax_tmp.grid(True)
     fig_tmp.tight_layout()
     fig_tmp.savefig(f"{save_name}_temperature_heat.png")
@@ -280,13 +280,16 @@ def plot_magma_ocean():
     fig_orb.savefig(f"{save_name}_orbit.png")
 
     # Spin Plot
-    spin_host_period = (2 * np.pi / results['Tr'][2,:]) / 86400.0
-    spin_planet_period = (2 * np.pi / results['Tr'][3,:]) / 86400.0
+    orbital_motion = np.zeros_like(results['Tr'][0,:])
+    for i, semi_a in enumerate(results['Tr'][0,:]):
+        orbital_motion[i] = semi_a2orbital_motion(results['Tr'][0,i], MStar, Mp)
+    spin_host_frac = (results['Tr'][2,:]/orbital_motion)
+    spin_planet_frac = (results['Tr'][3,:]/orbital_motion)
     fig_spin, ax_spin = plt.subplots(figsize=(8, 5))
-    ax_spin.plot(t_tot_years, spin_planet_period, color='blue', label='Planet')
-    ax_spin.plot(t_tot_years, spin_host_period, color='red', label='Star')
+    ax_spin.plot(t_tot_years, spin_planet_frac, color='blue', label='Planet')
+    ax_spin.plot(t_tot_years, spin_host_frac, color='red', label='Star')
     ax_spin.set_xlabel('Time [yr]')
-    ax_spin.set_ylabel('Spin Period [days]')
+    ax_spin.set_ylabel('Spin / Orbital Motion')
     ax_spin.set_title('Spin Evolution')
     ax_spin.set_xscale('log')
     ax_spin.set_yscale('linear')
