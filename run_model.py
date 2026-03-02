@@ -31,20 +31,9 @@ from utils.postprocess import postprocess_magma_ocean
 from utils.get_comp import get_comp
 from utils.get_pressure2 import get_pressure2
 from utils.get_massbalance4 import get_massbalance4
+from utils.general_utils import merge_dicts
+from utils.nondim_scales import StateScaler
 from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
-
-def merge_dicts(overwrite_dict, reference_dict):
-    for key, value in reference_dict.items():
-        if key not in overwrite_dict:
-            # Value not in overwrite dict; use reference
-            overwrite_dict[key] = value
-        elif isinstance(value, dict):
-            # Value is in both and it is another dict; recursive call.
-            merge_dicts(overwrite_dict[key], value)
-        else:
-            # Value is in both; prioritize overwrite.
-            pass
-    return overwrite_dict
 
 #########################################
 ############ INITIALIZATION #############
@@ -65,11 +54,11 @@ with open("baseline_config.toml", "rb") as f:
     params = tomllib.load(f)
 
 # Load specific configs
-simultation_config = 'trappist1e'
-with open(f'{simultation_config}.toml', "rb") as f:
+simulation_config = 'trappist1e'
+with open(f'{simulation_config}.toml', "rb") as f:
     specific_params = tomllib.load(f)
 
-# Merge Params
+# Merge Params: the specific_config will override defaults from baseline_config.
 params = merge_dicts(specific_params, params)
 
 # Load stellar and OLR data
@@ -109,7 +98,7 @@ if integration_method.lower() not in ('rk23', 'rk45', 'dop853'):
 MStar = star_params['mass_star_relative'] * constants['mass_sun']
 LStar = star_params['lum_star_relative'] * constants['lum_sun']
 host_radius = star_params['host_radius']
-tsat_sec = star_params['xuv']['time_saturation_years']
+tsat_sec = star_params['xuv']['tsat_years'] * constants['seconds_per_year'] # Converted to sec
 
 # --- Planet properties ---
 Rp = planet_params['radius_planet_relative'] * constants['radius_earth']
@@ -143,38 +132,12 @@ alpha_therm = thermo_params['thermal_expansion']
 muO = constants['molar_mass_O']
 muFeO1_5 = comp_params['molar_mass_FeO1_5']
 
-# =====================================================================
-# --- Initial Conditions Setup ---
-# =====================================================================
-initial_semi_a = a
-initial_orbital_freq = semi_a2orbital_motion(initial_semi_a, MStar, Mp)
-initial_eccentricity = orbit_params['initial_eccentricity']
-initial_spin_host = 2.0 * np.pi / (86400.0 * star_params['spin_days'])
-initial_spin_planet = planet_params['initial_spin_multiplier'] * initial_orbital_freq
-
-Tr0 = np.zeros(11, dtype=np.float64)
-Tr0[0], Tr0[1] = initial_semi_a, initial_eccentricity
-Tr0[2], Tr0[3] = initial_spin_host, initial_spin_planet
-Tr0[4] = planet_params['initial_mantle_temp']
-
-# initial depth of base of magma ocean
-base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
-Tr0[5] = max(Rp - base_depth, Rc) 
-
-Mmo0 = (4.0 / 3.0) * np.pi * rho_mantle * (Rp**3 - Tr0[5]**3)
-
-Tr0[6] = MH2O - FH2O * Mmo0 # initial abundance of H2O in solid phase
-Tr0[7] = FH2O * Mmo0 # total initial water abundance in magma ocean
-Tr0[8] = FeOt * Fe3_Fet * Mmo0 * (muO / 2.0 / muFeO1_5) # orbit_params in melt FeO(1.5)
-Tr0[9] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2.0 / muFeO1_5) # orbit_params in solid FeO(1.5)
-Tr0[10] = Tr0[4] - 1.0 # surface temperature
 
 
 #########################################
 # Execution Wrappers
 #########################################
 CRASH_IF_SOL_FAILS = False
-
 def monitor_ode(fun, t_span, y0, phase_name, **kwargs):
     """ Wraps solve_ivp with a tqdm progress bar tracking years. """
     t0, tf = t_span
@@ -200,19 +163,50 @@ def monitor_ode(fun, t_span, y0, phase_name, **kwargs):
         raise Exception(f"Integration failed at t={sol.t[-1]} for {phase_name}: {sol.message}.")
     return sol
 
+# =====================================================================
+# --- Initial Conditions Setup ---
+# =====================================================================
+initial_semi_a = a
+initial_orbital_freq = semi_a2orbital_motion(initial_semi_a, MStar, Mp)
+initial_eccentricity = orbit_params['initial_eccentricity']
+initial_spin_host = 2.0 * np.pi / (86400.0 * star_params['spin_days'])
+initial_spin_planet = planet_params['initial_spin_multiplier'] * initial_orbital_freq
+
+Tr0 = np.zeros(11, dtype=np.float64)
+Tr0[0] = initial_semi_a                       # Semi Major Axis [m]
+Tr0[1] = initial_eccentricity                 # Eccentricity
+Tr0[2] = initial_spin_host                    # Star Spin Rate [Rad s-1]
+Tr0[3] = initial_spin_planet                  # Planet Spin Rate [Rad s-1]
+Tr0[4] = planet_params['initial_mantle_temp'] # Planet Mantle Temperature [K]
+
+# initial depth of base of magma ocean
+base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
+Tr0[5] = max(Rp - base_depth, Rc) 
+
+Mmo0 = (4.0 / 3.0) * np.pi * rho_mantle * (Rp**3 - Tr0[5]**3)
+
+Tr0[6] = MH2O - FH2O * Mmo0 # initial abundance of H2O in solid phase
+Tr0[7] = FH2O * Mmo0       # total initial water abundance in magma ocean
+Tr0[8] = FeOt * Fe3_Fet * Mmo0 * (muO / 2.0 / muFeO1_5) # oxygen in melt FeO(1.5)
+Tr0[9] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2.0 / muFeO1_5) # oxygen in solid FeO(1.5)
+Tr0[10] = Tr0[4] - 1.0 # surface temperature
+
 
 #########################################
 # Phase 1 - Magma Ocean
 #########################################
 phase1_ode = partial(
     moODE_phase1, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho_mantle=rho_mantle, g=gp,
-    t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt, tsat=tsat_sec, Mp=Mp, LStar=LStar,
-    Rh=host_radius, Mh=MStar, params=params, tides_on_flag=tides_on_flag
+    Ts=Ts, Ps=Ps, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt, 
+    Temp_K=Temp_K, P_Pa=P_Pa, tsat=tsat_sec, Mp=Mp, LStar=LStar, Rh=host_radius, 
+    Mh=MStar, params=params, tides_on_flag=tides_on_flag
 )
+scaler_phase1 = StateScaler(phase=1, a0=initial_semi_a, Rp=Rp, M_ocean=MH2O)
 
 sol1 = monitor_ode(phase1_ode, t_span=(start_time_sec, end_time_sec), y0=Tr0, 
                    phase_name='Phase 1', method=integration_method, 
-                   events=[moEvent_phase1], rtol=integration_rtol, atol=integration_atol)
+                   scaler=scaler_phase1, events=[moEvent_phase1], 
+                   rtol=integration_rtol, atol=integration_atol)
 
 #########################################
 # Phase 2 - Solidification
@@ -237,11 +231,14 @@ else:
 
 # Setup state vector for Phase 2
 Tr0_2 = np.zeros(9, dtype=np.float64)
-Tr0_2[0:4] = sol1.y[0:4, -1]
-Tr0_2[4] = sol1.y[4, -1] 
-Tr0_2[5] = sol1.y[6, -1] + sol1.y[7, -1] - (Patm_end * 4.0 * np.pi * Rp**2 / gp) # Water in solid
-Tr0_2[6] = Patm_end * 4.0 * np.pi * Rp**2 / gp # Water in atm
-Tr0_2[7] = PO2_end * 4.0 * np.pi * Rp**2 / gp  # O2 in atm
+Tr0_2[0] = sol1.y[0, -1]  # Semi Major Axis [m]
+Tr0_2[1] = sol1.y[1, -1]  # Eccentricity
+Tr0_2[2] = sol1.y[2, -1]  # Star Spin Rate [Rad s-1]
+Tr0_2[3] = sol1.y[3, -1]  # Planet Spin Rate [Rad s-1]
+Tr0_2[4] = sol1.y[4, -1]  # Planet Mantle Temperature [K]
+Tr0_2[5] = sol1.y[6, -1] + sol1.y[7, -1] - (Patm_end * 4.0 * np.pi * Rp**2 / gp) # Water mass in mantle.
+Tr0_2[6] = Patm_end * 4.0 * np.pi * Rp**2 / gp # Water mass in atm
+Tr0_2[7] = PO2_end * 4.0 * np.pi * Rp**2 / gp  # O2 mass in atm
 Tr0_2[8] = sol1.y[10, -1] # Surface temp
 
 # Kickstart Solidification
@@ -249,44 +246,52 @@ Tr0_2[5] += 1e-12 * Mmantle
 
 phase2_ode = partial(
     moODE_phase2, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho_mantle=rho_mantle, g=gp,
-    t_flux=t_flux, Lbol=Lbol, tsat=tsat_sec, Mp=Mp, LStar=LStar,
-    Rh=host_radius, Mh=MStar, params=params, tides_on_flag=tides_on_flag
+    Ts=Ts, Ps=Ps, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt, 
+    Temp_K=Temp_K, P_Pa=P_Pa, tsat=tsat_sec, Mp=Mp, LStar=LStar, Rh=host_radius, 
+    Mh=MStar, params=params, tides_on_flag=tides_on_flag
 )
 
 phase2_event = partial(moEvent_phase2, core_mass_fraction=core_fraction, planet_mass=Mp)
+scaler_phase2 = StateScaler(phase=2, a0=initial_semi_a, Rp=Rp, M_ocean=MH2O)
 
 sol2 = monitor_ode(phase2_ode, t_span=(sol1.t[-1], end_time_sec), y0=Tr0_2, 
                    phase_name='Phase 2', method=integration_method, 
-                   events=[phase2_event], rtol=integration_rtol, atol=integration_atol)
+                   scaler=scaler_phase2, events=[phase2_event], 
+                   rtol=integration_rtol, atol=integration_atol)
 
 
 #########################################
 # Phase 3 - Sub-solidus Tectonics
 #########################################
-FH2O3 = Tr0_2[1] / Mmantle
 Tr0_3 = np.zeros(8, dtype=np.float64)
-Tr0_3[0:4] = sol2.y[0:4, -1]
-Tr0_3[4] = sol2.y[4, -1]
-Tr0_3[5] = sol2.y[6, -1]
-Tr0_3[6] = sol2.y[7, -1]
-Tr0_3[7] = sol2.y[8, -1]
+Tr0_3[0] = sol2.y[0, -1] # Semi Major Axis [m]
+Tr0_3[1] = sol2.y[1, -1] # Eccentricity
+Tr0_3[2] = sol2.y[2, -1] # Star Spin Rate [Rad s-1]
+Tr0_3[3] = sol2.y[3, -1] # Planet Spin Rate [Rad s-1]
+Tr0_3[4] = sol2.y[4, -1] # Planet Mantle Temperature [K]
+FH2O3    = sol2.y[5, -1] / Mmantle
+Tr0_3[5] = sol2.y[6, -1] # Water mass in Atmo
+Tr0_3[6] = sol2.y[7, -1] # O2 mass in Atmo
+Tr0_3[7] = sol2.y[8, -1] # surface temperature
 
 phase3_ode = partial(
     moODE_phase3, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho_mantle=rho_mantle, g=gp,
-    t_flux=t_flux, Lbol=Lbol, tsat=tsat_sec, FH2O=FH2O3, Mp=Mp, LStar=LStar,
-    Rh=host_radius, Mh=MStar, params=params
+    Ts=Ts, Ps=Ps, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt, 
+    Temp_K=Temp_K, P_Pa=P_Pa, tsat=tsat_sec, FH2O=FH2O3, Mp=Mp, LStar=LStar,
+    Rh=host_radius, Mh=MStar, params=params, tides_on_flag=tides_on_flag
 )
+scaler_phase3 = StateScaler(phase=3, a0=initial_semi_a, Rp=Rp, M_ocean=MH2O)
 
 sol3 = monitor_ode(phase3_ode, t_span=(sol2.t[-1], end_time_sec), y0=Tr0_3, 
                    phase_name='Phase 3', method=integration_method, 
-                   events=None, rtol=integration_rtol, atol=integration_atol)
-
+                   scaler=scaler_phase3, events=None, 
+                   rtol=integration_rtol, atol=integration_atol)
 
 #==========================================================================
 # Post-processing & Output
 #==========================================================================
-results = postprocess_magma_ocean(sol1, sol2, sol3, Rp, Rc, Mmantle, Mp, gp, Teq, a, 
-                                  LStar, Xi, FeOt, t_flux, Lbol, tsat_sec, params)
+results = postprocess_magma_ocean(sol1, sol2, sol3, Rp, Rc, Mmantle, gp, OLR, ASR,
+                                  Teq, Xi, FeOt, t_flux, Lbol, tsat_sec, a, Mp, LStar, params)
 
 def pad_array(arr, target_rows):
     n_rows, n_cols = arr.shape
@@ -319,6 +324,10 @@ surf_T_tot = np.concatenate([sol1.y[10,:], sol2.y[8,:], sol3.y[7,:]])
 # Derived arrays from post-processor
 PO2_tot = np.concatenate([results['phase1']['PO2'], results['phase2']['PO2'], results['phase3']['PO2']])
 Patm_tot = np.concatenate([results['phase1']['Patm'], results['phase2']['Patm'], results['phase3']['Patm']])
+Q_tidal = np.concatenate([results['phase1']['Q_tid'], results['phase2']['Q_tid'], results['phase3']['Q_tid']])
+Q_radiogenic = np.concatenate([results['phase1']['Q_tid'], results['phase2']['Q_tid'], results['phase3']['Q_tid']])
+print(f"Total Radiogenic Heating = {np.sum(Q_radiogenic)/1e12:0.3e} TW.")
+print(f"Total Tidal Heating = {np.sum(Q_tidal)/1e12:0.3e} TW.")
 
 # Save to CSV
 df_results = pd.DataFrame({
@@ -333,6 +342,8 @@ df_results.to_csv('results.txt', sep='\t', index=False)
 
 
 def plot_magma_ocean():
+    phase_line_color = 'k'
+
     # Temperature Plot
     fig_tmp, ax_tmp = plt.subplots(figsize=(8, 5))
     ax_tmp.plot(t_tot_years, mantle_T_tot, label='Mantle T', color='black')
@@ -342,6 +353,14 @@ def plot_magma_ocean():
     ax_tmp.set_title('Mantle and Surface Temperature Evolution')
     ax_tmp.set_xscale('log')
     ax_tmp.set_yscale('log')
+    ax_heat = ax_tmp.twinx()
+    ax_tmp.axvline(x=sol1.t[-1]/constants['seconds_per_year'], ls=':', c=phase_line_color)
+    ax_tmp.axvline(x=sol2.t[-1]/constants['seconds_per_year'], ls='-.', c=phase_line_color)
+    ax_heat.plot(t_tot_years, Q_tidal/1e12, label='Tidal', color='red')
+    ax_heat.plot(t_tot_years, Q_radiogenic/1e12, label='Radiogenic', color='green')
+    ax_heat.set_yscale('log')
+    ax_heat.set_ylabel('Heating [TW]')
+    ax_heat.legend()
     ax_tmp.legend()
     ax_tmp.grid(True)
     fig_tmp.tight_layout()
@@ -355,6 +374,8 @@ def plot_magma_ocean():
     ax_atm.set_title('PO2 and Patm Evolution')
     ax_atm.set_xscale('log')
     ax_atm.set_yscale('log')
+    ax_atm.axvline(x=sol1.t[-1]/constants['seconds_per_year'], ls=':', c=phase_line_color)
+    ax_atm.axvline(x=sol2.t[-1]/constants['seconds_per_year'], ls='-.', c=phase_line_color)
     ax_atm.legend()
     ax_atm.grid(True)
     fig_atm.tight_layout()
@@ -374,6 +395,8 @@ def plot_magma_ocean():
     ax_orb.set_xscale('log')
     ax_orb.set_yscale('log')
     ax2_orb.set_yscale('log')
+    ax_orb.axvline(x=sol1.t[-1]/constants['seconds_per_year'], ls=':', c=phase_line_color)
+    ax_orb.axvline(x=sol2.t[-1]/constants['seconds_per_year'], ls='-.', c=phase_line_color)
     ax_orb.grid(True)
     ax_orb.tick_params(axis='y', colors='red')
     ax2_orb.tick_params(axis='y', colors='blue')
@@ -391,6 +414,8 @@ def plot_magma_ocean():
     ax_spin.set_title('Spin Evolution')
     ax_spin.set_xscale('log')
     ax_spin.set_yscale('log')
+    ax_spin.axvline(x=sol1.t[-1]/constants['seconds_per_year'], ls=':', c=phase_line_color)
+    ax_spin.axvline(x=sol2.t[-1]/constants['seconds_per_year'], ls='-.', c=phase_line_color)
     ax_spin.grid(True)
     ax_spin.legend()
     fig_spin.tight_layout()

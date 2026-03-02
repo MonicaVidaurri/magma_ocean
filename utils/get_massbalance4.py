@@ -110,7 +110,7 @@ def get_massbalance4(
         
         max_iters = num['max_fixed_point_iters']
         fallback_threshold = num['fallback_iter_threshold']
-        tolerance = num['solver_tolerance', 1e-12]
+        tolerance = num['solver_tolerance']
         
         while count <= max_iters:
             # Protect against log(<=0) or division by zero
