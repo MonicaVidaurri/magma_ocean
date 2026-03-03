@@ -73,41 +73,50 @@ def calculate_tidal_dissipation(
         obliquity_h = star_tides['obliquity']
         obliquity_p = planet_tides['obliquity']
 
-        dissipation_results = quick_dual_body_tidal_dissipation(
-            radii=(radius_host, radius_planet),
-            masses=(mass_host, mass_planet),
-            gravities=(g_h, g_p),
-            densities=(density_bulk_host, density_bulk_planet),
-            mois=(moi_h, moi_p),
-            viscosities=(visc_h, solid_viscosity),
-            shear_moduli=(shear_mod_h, solid_shear),
-            rheologies=(rheology_h, rheology_p),
-            complex_compliance_inputs=None,
-            obliquities=(obliquity_h, obliquity_p),
-            spin_frequencies=(spin_freq_host, spin_freq_planet), 
-            tidal_scales=(tidal_scale_h, tidal_scale_p),
-            fixed_k2s=(fixed_k2_h, fixed_k2_p),
-            fixed_qs=(fixed_Q_h, fixed_Q_p),
-            eccentricity=eccentricity,
-            orbital_frequency=orbital_frequency,
-            max_tidal_order_l=2,
-            eccentricity_truncation_lvl=20,
-            use_obliquity=(not isclose(obliquity_p, 0.0)),
-            da_dt_scale=1.,
-            de_dt_scale=1.,
-            dspin_dt_scale=1.
-            )
-        da_dt           = dissipation_results['semi_major_axis_derivative']
-        de_dt           = dissipation_results['eccentricity_derivative']
-        dspin_dt_h      = dissipation_results['host']['spin_rate_derivative']
-        dspin_dt_p      = dissipation_results['secondary']['spin_rate_derivative']
-        tidal_heating_h = dissipation_results['host']['tidal_heating']
-        tidal_heating_p = dissipation_results['secondary']['tidal_heating']
-        
-        if spin_lock:
-            dspin_dt_p = 0.0
-        if circularization_lock:
-            de_dt = 0.0
+        try:
+            dissipation_results = quick_dual_body_tidal_dissipation(
+                radii=(radius_host, radius_planet),
+                masses=(mass_host, mass_planet),
+                gravities=(g_h, g_p),
+                densities=(density_bulk_host, density_bulk_planet),
+                mois=(moi_h, moi_p),
+                viscosities=(visc_h, solid_viscosity),
+                shear_moduli=(shear_mod_h, solid_shear),
+                rheologies=(rheology_h, rheology_p),
+                complex_compliance_inputs=None,
+                obliquities=(obliquity_h, obliquity_p),
+                spin_frequencies=(spin_freq_host, spin_freq_planet), 
+                tidal_scales=(tidal_scale_h, tidal_scale_p),
+                fixed_k2s=(fixed_k2_h, fixed_k2_p),
+                fixed_qs=(fixed_Q_h, fixed_Q_p),
+                eccentricity=eccentricity,
+                orbital_frequency=orbital_frequency,
+                max_tidal_order_l=2,
+                eccentricity_truncation_lvl=20,
+                use_obliquity=(not isclose(obliquity_p, 0.0)),
+                da_dt_scale=1.,
+                de_dt_scale=1.,
+                dspin_dt_scale=1.
+                )
+            da_dt           = dissipation_results['semi_major_axis_derivative']
+            de_dt           = dissipation_results['eccentricity_derivative']
+            dspin_dt_h      = dissipation_results['host']['spin_rate_derivative']
+            dspin_dt_p      = dissipation_results['secondary']['spin_rate_derivative']
+            tidal_heating_h = dissipation_results['host']['tidal_heating']
+            tidal_heating_p = dissipation_results['secondary']['tidal_heating']
+            
+            if spin_lock:
+                dspin_dt_p = 0.0
+            if circularization_lock:
+                de_dt = 0.0
+        except:
+            da_dt           = 0.0
+            de_dt           = 0.0
+            dspin_dt_h      = 0.0
+            dspin_dt_p      = 0.0
+            tidal_heating_h = 0.0
+            tidal_heating_p = 0.0
+
 
     else:
         da_dt           = 0.0

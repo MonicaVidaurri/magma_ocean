@@ -71,19 +71,19 @@ integration_atol   = simulation_params['atol']
 #     1e-6,   # 9: Mass Oxygen Solid
 #     1e-3    # 10: Surface Temp 
 # ], dtype=np.float64)
-integration_atol = np.array([
-    1e-6,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
-    1e-5,   # 1: Eccentricity
-    1e-6,   # 2: Star Spin Rate 
-    1e-6,   # 3: Planet Spin Rate 
-    1e-8,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
-    1e-6,   # 5: Solid Radius (Allows the phase boundary to step faster)
-    1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
-    1e-6,   # 7: Mass Water MO/Atm 
-    1e-6,   # 8: Mass Oxygen MO/Atm 
-    1e-6,   # 9: Mass Oxygen Solid
-    1e-6    # 10: Surface Temp 
-], dtype=np.float64)
+# integration_atol = np.array([
+#     1e-6,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
+#     1e-5,   # 1: Eccentricity
+#     1e-6,   # 2: Star Spin Rate 
+#     1e-6,   # 3: Planet Spin Rate 
+#     1e-8,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
+#     1e-6,   # 5: Solid Radius (Allows the phase boundary to step faster)
+#     1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
+#     1e-6,   # 7: Mass Water MO/Atm 
+#     1e-6,   # 8: Mass Oxygen MO/Atm 
+#     1e-6,   # 9: Mass Oxygen Solid
+#     1e-6    # 10: Surface Temp 
+# ], dtype=np.float64)
 
 start_time_sec     = simulation_params['start_time_years'] * constants['seconds_per_year']
 end_time_sec       = simulation_params['end_time_years'] * constants['seconds_per_year']
@@ -280,6 +280,7 @@ total_years = (end_time_sec - start_time_sec) / constants['seconds_per_year']
 for _phase_idx in range(MAX_PHASES):
     print(f"Working on phase {_phase_idx}:: {_PHASE_LABELS[phase]}")
 
+    
     if t_current >= end_time_sec:
         break
     elif t_current != start_time_sec:

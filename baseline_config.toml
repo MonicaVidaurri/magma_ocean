@@ -10,6 +10,7 @@ atol = 1.0e-8
 start_time_years = 1.0
 end_time_years = 8.0e9
 tides_on = false
+surface_temp_escape = false   # If true then the surface temperature plays a role in atmo escape via get_loss.py
 
 [numerical]
 # Grid and step sizes for physical evaluation

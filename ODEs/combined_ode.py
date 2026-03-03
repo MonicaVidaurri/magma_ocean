@@ -193,7 +193,7 @@ def moODE_magma_ocean(
     # --- Energy budget ---
     flux_to_space            = get_flux(temp_surface, Teq, pressure_H2O, pressure_O2, Rp, g, params)
     flux_loss_H, flux_loss_O = get_loss(t_flux, Lbol, t_sec, pressure_O2, pressure_H2O,
-                                        tsat, semi_a, Mp, Rp, LStar, params)
+                                        tsat, semi_a, Mp, Rp, LStar, temp_surface, params)
     radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
 
     # --- Tidal dissipation (to solidification front) ---
@@ -334,7 +334,7 @@ def moODE_solid(
     # --- Energy budget ---
     flux_to_space            = get_flux(temp_surface, Teq, pressure_H2O, pressure_O2, Rp, g, params)
     flux_loss_H, flux_loss_O = get_loss(t_flux, Lbol, t_sec, pressure_O2, pressure_H2O,
-                                        tsat, semi_a, Mp, Rp, LStar, params)
+                                        tsat, semi_a, Mp, Rp, LStar, temp_surface, params)
     radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
 
     # --- Tidal dissipation (full planet radius) ---
@@ -477,7 +477,7 @@ def moODE_dry_solid(
     # --- Energy budget ---
     flux_to_space            = get_flux(temp_surface, Teq, pressure_H2O, pressure_O2, Rp, g, params)
     flux_loss_H, flux_loss_O = get_loss(t_flux, Lbol, t_sec, pressure_O2, pressure_H2O,
-                                        tsat, semi_a, Mp, Rp, LStar, params)
+                                        tsat, semi_a, Mp, Rp, LStar, temp_surface, params)
     radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
 
     # --- Tidal dissipation (full planet radius) ---

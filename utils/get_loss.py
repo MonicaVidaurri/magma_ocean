@@ -11,6 +11,7 @@ def get_loss(
         mass_planet,
         radius_planet,
         stellar_luminosity,
+        temp_surface,
         params):
     """
     Calculates the XUV-driven hydrodynamic atmospheric escape fluxes of Hydrogen 
@@ -63,6 +64,8 @@ def get_loss(
     star_xuv = params['star']['xuv']
     esc      = params['planet']['atmosphere']['escape']
 
+    use_surf_temp_for_escape = params['simulation']['surface_temp_escape']
+
     # --- Constants & Time Conversion ---
     G            = c['G']                # m^3/kg/s^2
     stefan_boltz = c['stefan_boltzmann'] # W/m2/K4
@@ -95,6 +98,10 @@ def get_loss(
     heating_efficiency = star_xuv['heating_efficiency']
     XUV_model          = esc['xuv_model']
 
+    # Molar fractions for the source gas
+    X_H = esc['source_frac_H']
+    X_O = esc['source_frac_O']
+
     # Fractional XUV luminosity relative to Lbol
     f_xuv = f_sat * (t_flux_years / t_sat_years)**decay_beta
 
@@ -115,17 +122,56 @@ def get_loss(
     else:
         current_Fxuv = flux_xuv_orbit[0]
 
-    # --- Hydrodynamic Escape (Energy-Limited Base) ---
-    grav_potential = G * mass_planet / radius_planet
-    
-    # Energy-limited mass flux (kg/m^2/s)
-    phi_energy_limited = (heating_efficiency * current_Fxuv / 4.0) / grav_potential 
+    if use_surf_temp_for_escape:
+        # --- Expanded Radius / Atmospheric Inflation ---
+        # Calculates how far the XUV absorption level is pushed out by the hot surface.
+        total_pressure = pressure_H2O + pressure_O2
+        P_xuv = 1e-4  # Typical pressure at the XUV tau=1 level (1 nbar)
+        
+        if total_pressure > P_xuv:
+            # Get MKS molar masses for standard physics equations (kg/mol)
+            mu_H_mks = c['molar_mass_H']
+            mu_O_mks = c['molar_mass_O']
+            mean_molar_mass = (X_H * mu_H_mks + X_O * mu_O_mks) / (X_H + X_O)
+            
+            # Scale height based on surface temperature
+            gas_constant = boltzmann * avogadro
+            scale_height = (gas_constant * temp_surface) / (mean_molar_mass * gravity)
+            
+            # Integrate scale height up to the XUV level
+            n_scale_heights = np.log(total_pressure / P_xuv)
+            R_xuv = radius_planet + (scale_height * n_scale_heights)
+        else:
+            R_xuv = radius_planet
 
-    # --- Diffusion-Limited Escape (Hydrogen Dragging Oxygen) ---
-    temp_escape = temp_eq
-    
-    # Baseline molecule flux of H
-    phi_H_ref_molecules = phi_energy_limited / (molar_mass_H * mass_proton) 
+        # Geometric amplification factor for the expanded absorbing area and lower gravity
+        expansion_factor = (R_xuv / radius_planet)**3
+
+        # --- Hydrodynamic Escape (Energy-Limited Base) ---
+        grav_potential = G * mass_planet / radius_planet
+        
+        # Energy-limited mass flux (kg/m^2/s) scaled by the inflated radius
+        phi_energy_limited = ((heating_efficiency * current_Fxuv / 4.0) / grav_potential) * expansion_factor 
+
+        # --- Diffusion-Limited Escape (Hydrogen Dragging Oxygen) ---
+        # When the atmosphere is this inflated, the upper atmosphere temperature 
+        # should scale partially with the surface, not just the stellar equilibrium.
+        temp_escape = max(temp_eq, temp_surface * 0.15) 
+        
+        # Baseline molecule flux of H
+        phi_H_ref_molecules = phi_energy_limited / (molar_mass_H * mass_proton)
+    else:
+        # --- Hydrodynamic Escape (Energy-Limited Base) ---
+        grav_potential = G * mass_planet / radius_planet
+        
+        # Energy-limited mass flux (kg/m^2/s)
+        phi_energy_limited = (heating_efficiency * current_Fxuv / 4.0) / grav_potential 
+
+        # --- Diffusion-Limited Escape (Hydrogen Dragging Oxygen) ---
+        temp_escape = temp_eq
+        
+        # Baseline molecule flux of H
+        phi_H_ref_molecules = phi_energy_limited / (molar_mass_H * mass_proton) 
 
     # Molar fractions assuming a pure H2O source gas being dissociated
     X_H = esc['source_frac_H']
