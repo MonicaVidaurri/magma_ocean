@@ -7,9 +7,12 @@ from utils.get_massbalance4 import get_massbalance4
 from utils.get_flux import get_flux
 from utils.get_loss import get_loss
 from physics.degas2 import degas2
+from physics.viscosity import viscosity
 from physics.radiogenics import get_radiogenic_heat
+from physics.shear_modulus import calc_shear_modulus
 from physics.tides import calculate_tidal_dissipation
 from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
+
 
 def moODE_unified(
         t_sec, Tr, Rp, Rc, Mmantle, Teq, rho_mantle, g, Ts, Ps, OLR, ASR, 
@@ -82,25 +85,34 @@ def moODE_unified(
     # =====================================================================
     # --- Phase Branching Logic ---
     # =====================================================================
-    is_magma_ocean = (radius_solid < Rp - 0.01)
+    # Bulk melt fraction drives the phase criterion and rheology — compute it first.
+    _, meltfrac_bulk = get_meltfracb(g, temp_mantle, Rp, Rc, Mmantle, params)
+    if temp_mantle <= thermo['solidus_intercept_low_p']:
+        meltfrac_bulk = 0.0
+
+    melt_fraction_threshold = params['planet']['convection']['melt_fraction_threshold']
+    is_magma_ocean = (meltfrac_bulk >= melt_fraction_threshold)
     mass_magma_ocean = max(0.0, (4.0 / 3.0) * np.pi * rho_mantle * (Rp**3 - radius_solid**3))
 
     # Thermodynamics (B_coeff controls melting/solidifying rate)
     if (Rp - radius_solid) > (405e9 / 77.89 / rho_mantle / g):
-        Tsol_a = thermo['solidus_slope_high_p'] * 1e-9 
+        Tsol_a = thermo['solidus_slope_high_p'] * 1e-9
         Tsol_b = thermo['solidus_intercept_high_p']
     else:
-        Tsol_a = thermo['solidus_slope_low_p'] * 1e-9 
+        Tsol_a = thermo['solidus_slope_low_p'] * 1e-9
         Tsol_b = thermo['solidus_intercept_low_p']
 
     B_coeff = (
-        (heat_capacity_mantle * (Tsol_b * thermal_expansion - Tsol_a * rho_mantle * heat_capacity_mantle)) / 
+        (heat_capacity_mantle * (Tsol_b * thermal_expansion - Tsol_a * rho_mantle * heat_capacity_mantle)) /
         (g * (Tsol_a * rho_mantle * heat_capacity_mantle - thermal_expansion * temp_mantle)**2)
     )
 
-    # --- Regime-Specific Properties ---
+    # Tides always respond to the solid matrix, regardless of surface liquid
+    solid_shear_modulus = calc_shear_modulus(meltfrac_bulk, params)
+    nu_solid_bulk = viscosity(temp_mantle, temp_surface, rho_mantle, Tr[6]/Mmantle, meltfrac_bulk, params)
+
     if is_magma_ocean:
-        _, meltfrac = get_meltfrac(g, temp_mantle, Rp, Rc, Mmantle, params)
+        _, meltfrac_mo = get_meltfrac(g, temp_mantle, Rp, Rc, Mmantle, params)
         
         if mass_water_atm > 0.0 and mass_magma_ocean > 0.0:
             mass_frac_water_melt = min(mass_water_atm / mass_magma_ocean, 1.0)
@@ -125,13 +137,14 @@ def moODE_unified(
             
         Db_phys = radius_solid
         heatflux_water_frac = mass_frac_water_melt
+
+        # Heat flux uses Magma Ocean properties
+        q_mantle, Db, uc, Ra, nu_ = mantleheatflux(
+            temp_mantle, temp_surface, Db_phys, Rp, Rc, g, rho_mantle, heatflux_water_frac, meltfrac_mo, params
+        )
         
     else:
-        if temp_mantle > thermo['solidus_intercept_low_p']:
-            _, meltfrac = get_meltfracb(g, temp_mantle, Rp, Rc, Mmantle, params) 
-        else:
-            meltfrac = 0.0
-            
+        meltfrac_mo = 0.0 
         mass_frac_water_melt = 0.0
         partition_coeff_H2O = 0.0
         mass_frac_FeO1_5 = 0.0
@@ -148,6 +161,11 @@ def moODE_unified(
         Db_phys = Rc # Convective zone covers the entire solid mantle
         heatflux_water_frac = mass_frac_water_solid
 
+        # Heat flux uses Bulk Mantle properties
+        q_mantle, Db, uc, Ra, nu_ = mantleheatflux(
+            temp_mantle, temp_surface, Db_phys, Rp, Rc, g, rho_mantle, heatflux_water_frac, meltfrac_bulk, params
+        )
+
     # =====================================================================
     # --- Energy Fluxes & Loss Rates ---
     # =====================================================================
@@ -155,17 +173,15 @@ def moODE_unified(
     flux_loss_H, flux_loss_O = get_loss(t_flux, Lbol, t_sec, pressure_O2, pressure_H2O, tsat, semi_a, Mp, Rp, LStar, params)
     radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
 
-    q_mantle, Db, uc, Ra, nu = mantleheatflux(
-        temp_mantle, temp_surface, Db_phys, Rp, Rc, g, rho_mantle, heatflux_water_frac, meltfrac, params
-    )
-
     if is_magma_ocean:
         tidal_radius = radius_solid
     else:
         tidal_radius = Rp
+    visc_solid = nu_solid_bulk * rho_mantle
     da_dt, de_dt, dspin_dt_h, dspin_dt_p, _, tidal_heating_p, _, _, _ = calculate_tidal_dissipation(
         eccentricity, orbital_freq, spin_freq_p, spin_freq_h, Rp, Rh, Mp, Mh,
-        temp_mantle, Rc, nu, rho_mantle, meltfrac, tidal_radius, tides_on_flag, params
+        Rc, visc_solid, solid_shear_modulus,
+        tidal_radius, tides_on_flag, params
     )
 
     # =====================================================================
@@ -183,8 +199,9 @@ def moODE_unified(
     dT_m_dt = (-mantle_cooling_watts + total_mantle_heating_watts) / thermal_inertia_mantle
     
     rate_radius_solidified = B_coeff * dT_m_dt
-    # Clamp crustal growth once solid
-    if not is_magma_ocean and rate_radius_solidified > 0.0:
+    # Clamp only at the physical surface boundary, not at the phase criterion,
+    # so solidification can continue even after the MO rheology ends.
+    if radius_solid >= Rp and rate_radius_solidified > 0.0:
         rate_radius_solidified = 0.0
 
     mass_solidified = 4.0 * np.pi * rho_mantle * radius_solid**2 * rate_radius_solidified
@@ -215,8 +232,9 @@ def moODE_unified(
 
     # Surface Thermal Properties
     net_surface_power = surface_area * (q_mantle - flux_to_space)
+    use_latent_heat = True
     latent_heat_capacity = 0.0
-    if mass_water_atm > 0:
+    if mass_water_atm > 0 and use_latent_heat:
         # Calculate the theoretical condensation temperature (T_sat) for the current water mass
         P_actual = mass_water_atm * g / surface_area
         P_crit = 10**(vapor_a - vapor_b / crit_temp_water) * 1e5
@@ -240,7 +258,7 @@ def moODE_unified(
             dP_sat_dT = P_sat * np.log(10) * vapor_b / (temp_surface**2)
             latent_heat_capacity = latent_heat_vaporization * (surface_area / g) * dP_sat_dT * activation
     
-    heat_cap_atm   = heat_capacity_water * (pressure_H2O * surface_area / g)
+    heat_cap_atm = heat_capacity_water * (pressure_H2O * surface_area / g)
     if is_magma_ocean:
         crust_depth_phys = radius_solid
     else:
@@ -287,3 +305,4 @@ def moODE_unified(
     dTr_dt[10] = net_surface_power / total_surface_heat_capacity
 
     return dTr_dt
+

@@ -40,6 +40,7 @@ def get_XFeO(temp_kelvin, pressure_pa, mass_magma_ocean, radius_planet,
     # --- Unpack Parameters ---
     univ = params['constants']
     kc   = params['planet']['oxygen_fugacity']['kress_carmichael_1991']
+    comp = params['planet']['oxide_composition']
     num  = params['numerical']
 
     # --- Constants & Geometry ---
@@ -53,6 +54,21 @@ def get_XFeO(temp_kelvin, pressure_pa, mass_magma_ocean, radius_planet,
     frac_K2O   = mole_fractions[6]
     frac_FeOt  = mole_fractions[8]
     frac_Fe2O3_initial = mole_fractions[11]
+
+    # Calculate the bulk molar mass (kg/mol) of the melt to convert mass to moles.
+    bulk_molar_mass = (
+        mole_fractions[0] * comp['molar_mass_SiO2'] +
+        mole_fractions[1] * comp['molar_mass_TiO2'] +
+        mole_fractions[2] * comp['molar_mass_Al2O3'] +
+        mole_fractions[3] * comp['molar_mass_MgO'] +
+        mole_fractions[4] * comp['molar_mass_CaO'] +
+        mole_fractions[5] * comp['molar_mass_Na2O'] +
+        mole_fractions[6] * comp['molar_mass_K2O'] +
+        mole_fractions[7] * comp['molar_mass_P2O5'] +
+        mole_fractions[8] * comp['molar_mass_FeO']  # Total iron expressed as FeO
+    )
+    
+    total_moles_melt = mass_magma_ocean / bulk_molar_mass
 
     # --- Pre-compute Static KC91 Thermodynamic Terms ---
     T0         = kc['temp_ref']
@@ -83,9 +99,14 @@ def get_XFeO(temp_kelvin, pressure_pa, mass_magma_ocean, radius_planet,
         ln_fO2_kc = (log_ferric_ferrous_ratio + static_kc_sum) / kc['scaling_a']
         
         # Mass Balance Fugacity (Atmospheric Pressure)
-        # TODO: WARNING: This retains the original code's dimensional unit mismatch 
-        # (multiplying mole fraction by mass).
-        mass_O2_melt = (frac_FeOt - guess_XFeO - frac_Fe2O3_initial) * 0.25 * molar_mass_O2 * mass_magma_ocean
+        # WARNING: There was a issue in the original code's dimensional unit mismatch here.
+        # (multiplying mole fraction by mass). Here is original code
+        # mass_O2_melt = (frac_FeOt - guess_XFeO - frac_Fe2O3_initial) * 0.25 * molar_mass_O2 * mass_magma_ocean
+        # Fix: Convert mole fraction change to actual moles of O2, then to mass
+        delta_X_FeO = (frac_FeOt - guess_XFeO - frac_Fe2O3_initial)
+        moles_O2_melt = delta_X_FeO * 0.25 * total_moles_melt
+        mass_O2_melt = moles_O2_melt * molar_mass_O2
+
         mass_O2_atm  = mass_O2_total - mass_O2_melt
         
         # Prevent negative mass in log calculation

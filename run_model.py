@@ -4,7 +4,7 @@ import pandas as pd
 from functools import partial
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-
+from scipy.optimize import root_scalar
 try:
     import tomllib
 except ImportError:
@@ -28,6 +28,7 @@ from utils.postprocess import postprocess_magma_ocean
 from utils.get_comp import get_comp
 from utils.general_utils import merge_dicts
 from utils.nondim_scales import StateScaler
+from utils.mantle_grid import build_mantle_grid
 from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 
 # =====================================================================
@@ -54,6 +55,20 @@ comp_params       = params['planet']['oxide_composition']
 
 integration_method = simulation_params['method']
 integration_rtol   = simulation_params['rtol']
+integration_rtol = np.array([
+    1e-4,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
+    1e-4,   # 1: Eccentricity
+    1e-4,   # 2: Star Spin Rate 
+    1e-4,   # 3: Planet Spin Rate 
+    1e-3,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
+    1e-7,   # 5: Solid Radius (Allows the phase boundary to step faster)
+    1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
+    1e-6,   # 7: Mass Water MO/Atm 
+    1e-6,   # 8: Mass Oxygen MO/Atm 
+    1e-6,   # 9: Mass Oxygen Solid
+    1e-3    # 10: Surface Temp 
+], dtype=np.float64)
+
 integration_atol   = simulation_params['atol']
 start_time_sec     = simulation_params['start_time_years'] * constants['seconds_per_year']
 end_time_sec       = simulation_params['end_time_years'] * constants['seconds_per_year']
@@ -75,6 +90,7 @@ Mp = planet_params['mass_planet_relative'] * constants['mass_earth']
 Mmantle = (1.0 - planet_params['core_mass_fraction']) * Mp
 rho_mantle = Mmantle / ((4.0 / 3.0) * np.pi * (Rp**3 - Rc**3))
 gp = constants['G'] * Mp / Rp**2
+params['_grid'] = build_mantle_grid(Rp, Rc, gp, Mmantle, params)
 
 initial_semi_major_axis = orbit_params['initial_semi_major_axis'] * constants['au']
 Fstel = LStar / (4.0 * np.pi * initial_semi_major_axis**2)
@@ -103,15 +119,38 @@ Tr0[2] = 2.0 * np.pi / (86400.0 * star_params['spin_days'])
 Tr0[3] = planet_params['initial_spin_multiplier'] * semi_a2orbital_motion(initial_semi_major_axis, MStar, Mp)
 Tr0[4] = planet_params['initial_mantle_temp']
 
-base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
-Tr0[5] = max(Rp - base_depth, Rc) 
+# Find initial magma ocean depth based on temperature.
+max_mantle_depth = Rp - Rc
+def temp_difference(z):
+    """ Finds the exact intersection of the adiabat and piecewise solidus. """
+    T_ad = Tr0[4] + Tr0[4] * (alpha_therm * gp * z / Cp)
+    P_gpa = (rho_mantle * gp * z) / 1e9
+    
+    T_sol_low = thermo_params['solidus_slope_low_p'] * P_gpa + thermo_params['solidus_intercept_low_p']
+    T_sol_high = thermo_params['solidus_slope_high_p'] * P_gpa + thermo_params['solidus_intercept_high_p']
+    T_sol = min(T_sol_low, T_sol_high)
+    
+    return T_ad - T_sol
+
+try:
+    res = root_scalar(temp_difference, bracket=[0.0, Rp - Rc], method='brentq')
+    base_depth = res.root
+except ValueError:
+    # If the bracket fails, the mantle is hotter than the solidus at the CMB
+    base_depth = Rp - Rc
+# Original method:
+# base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
+base_depth = min(base_depth, 900.0e3)   # Model is currently very unstable if the magma ocean is larger than ~900 km thick
+Tr0[5] = max(Rp - base_depth, Rc)
+print(f"Initial Magma Ocean Depth {base_depth/1e3:0.2f} km.")
 
 Mmo0 = (4.0 / 3.0) * np.pi * rho_mantle * (Rp**3 - Tr0[5]**3)
 
 Tr0[6] = MH2O - FH2O * Mmo0
 Tr0[7] = FH2O * Mmo0 
-Tr0[8] = FeOt * Fe3_Fet * Mmo0 * (muO / 2.0 / muFeO1_5)
-Tr0[9] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2.0 / muFeO1_5)
+muFeO = comp_params['molar_mass_FeO']
+Tr0[8] = FeOt * Fe3_Fet * Mmo0 * (muO / 2.0 / muFeO)
+Tr0[9] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2.0 / muFeO)
 Tr0[10] = Tr0[4] - 1.0
 
 # =====================================================================
@@ -219,6 +258,7 @@ def plot_magma_ocean():
     Q_radiogenic[Q_radiogenic == 0.0] = np.nan
 
     def add_event_lines(axis):
+        return None  #Temp Disable
         for tc in results['t_crust']:
             axis.axvline(x=tc, ls=':', c='k')
         for td in results['t_degas']:
@@ -300,44 +340,48 @@ def plot_magma_ocean():
     fig_spin.savefig(f"{save_name}_spin.png")
 
     # Tidal Susceptibility Plot
-    fig_susp, ax_susp = plt.subplots(figsize=(8, 5))
-    # We need to make extra room on the left for the second y-axis
-    fig_susp.subplots_adjust(left=0.25)
+    fig_susp, ax_susp = plt.subplots(figsize=(11, 6)) 
+    # Left=0.25 leaves 25% space on the left. Right=0.75 leaves 25% space on the right.
+    fig_susp.subplots_adjust(left=0.2, right=0.8) 
     ax_susp.plot(t_tot_years, results['tidal_shear']/1e9, color='red')
     ax_susp.set_xlabel('Time [yr]')
     ax_susp.set_ylabel('Shear Modulus [GPa]', color='red')
     ax_susp.set_yscale('linear')
     ax_susp.set_xscale('log')
+    ax_susp.tick_params(axis='y', labelcolor='red')
+    ax_susp.spines['left'].set_color('red')
+    ax_susp.grid(True)
     ax_visc = ax_susp.twinx()
-    # Move the ticks and label to the left side
-    ax_visc.yaxis.set_ticks_position('left')
+    ax_visc.spines['left'].set_position(('axes', -0.15)) # Move outward by 20%
+    ax_visc.spines['left'].set_visible(True)
+    ax_visc.spines['right'].set_visible(False)
     ax_visc.yaxis.set_label_position('left')
-    # Offset the spine outward by 20% of the axes width so it doesn't overlap Axis 1
-    ax_visc.spines['left'].set_position(('axes', -0.2))
-    ax_visc.spines['left'].set_visible(True) # Required because twinx hides the left spine by default
-    # Plot and color
+    ax_visc.yaxis.set_ticks_position('left')
     ax_visc.plot(t_tot_years, results['tidal_visc'], color='blue')
     ax_visc.set_ylabel('Viscosity', color='blue')
     ax_visc.set_yscale('log')
     ax_visc.tick_params(axis='y', labelcolor='blue')
     ax_visc.spines['left'].set_color('blue')
-    # Optional: Hide the right spine on ax_visc to keep things clean
-    ax_visc.spines['right'].set_visible(False)
-    # Color the ticks and the spine
-    ax_susp.tick_params(axis='y', labelcolor='red')
-    ax_susp.spines['left'].set_color('red')
-    # Create another axis that shares the same x-axis
     ax_tidal = ax_susp.twinx()
-    # Plot and color (default twinx behavior puts this on the right)
+    ax_tidal.spines['right'].set_visible(True)
+    ax_tidal.spines['left'].set_visible(False)
     ax_tidal.plot(t_tot_years, results['tidal_scale'] * 100, color='green')
     ax_tidal.set_ylabel('Tidal Scale [%]', color='green')
+    ax_tidal.set_yscale('linear')
     ax_tidal.tick_params(axis='y', labelcolor='green')
     ax_tidal.spines['right'].set_color('green')
-    ax_susp.set_yscale('linear')
+    ax_mf = ax_susp.twinx() 
+    ax_mf.spines['right'].set_position(('axes', 1.15)) # Move outward by 20%
+    ax_mf.spines['right'].set_visible(True)
+    ax_mf.spines['left'].set_visible(False)
+    ax_mf.plot(t_tot_years, 100 * results['meltfrac'], color='black') 
+    ax_mf.set_ylabel('Solid Mantle Melt Fraction [%]', color='black')
+    ax_mf.set_yscale('linear')
+    ax_mf.tick_params(axis='y', labelcolor='black')
+    ax_mf.spines['right'].set_color('black')
+    
     ax_susp.set_title('Tidal Susceptibility Evolution')
-    ax_susp.grid(True)
-    add_event_lines(ax_orb)
-    fig_susp.tight_layout()
+    add_event_lines(ax_susp) 
     fig_susp.savefig(f"{save_name}_tidal_suscept.png")
 
     plt.show()

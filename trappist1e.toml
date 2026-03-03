@@ -2,13 +2,13 @@
 # TRAPPIST-1e Configuration File
 # ==============================================================================
 [simulation]
-version = "0.4"  # simulation version just for tracking changes.
+version = "0.7"  # simulation version just for tracking changes.
 # Primary numerical solver and integration settings
-method = "BDF"
-rtol = 1.0e-6
-atol = 1.0e-8
+method = "LSODA"
+rtol = 3.0e-7
+atol = 1.0e-10
 start_time_years = 1.0
-end_time_years = 8.0e9
+end_time_years = 1.0e10
 tides_on = true
 
 [numerical]
@@ -47,7 +47,7 @@ initial_spin_multiplier = 5.0       # Initial Spin / Orbital motion
 
 [planet.orbit]
 initial_semi_major_axis = 0.02925   # (au)
-initial_eccentricity = 0.2          # 
+initial_eccentricity = 0.1         # 
 
 [planet.atmosphere.escape]
 xuv_model = 1                       # Continuous decay
