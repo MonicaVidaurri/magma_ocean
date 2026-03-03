@@ -34,7 +34,7 @@ def calculate_tidal_dissipation(
         spin_lock = True
     
     circularization_lock = False
-    if isclose(eccentricity, 0.0, 1.0e-9, 1.0e-15) or eccentricity < 0.0:
+    if eccentricity < 1.0e-6:
         eccentricity = 0.0
         circularization_lock = True
     
@@ -42,6 +42,10 @@ def calculate_tidal_dissipation(
     if spin_lock and circularization_lock:
         # No tidal drivers. Turn tides off.
         calculate_tides = False
+
+    # Add viscosity check. Too low viscosity turn tides off.
+    # if solid_viscosity <  1.0e-5 or solid_shear < 1.0e-5:
+    #     calculate_tides = False
 
     if calculate_tides:
 
@@ -87,7 +91,7 @@ def calculate_tidal_dissipation(
             eccentricity=eccentricity,
             orbital_frequency=orbital_frequency,
             max_tidal_order_l=2,
-            eccentricity_truncation_lvl=10,
+            eccentricity_truncation_lvl=20,
             use_obliquity=(not isclose(obliquity_p, 0.0)),
             da_dt_scale=1.,
             de_dt_scale=1.,

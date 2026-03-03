@@ -89,12 +89,15 @@ def _surface_temp_ode(q_mantle, flux_to_space, Rp, pressure_H2O, g,
         P_crit   = 10**(vapor_a - vapor_b / crit_temp_water) * 1e5
         T_sat    = (crit_temp_water if P_actual >= P_crit
                     else vapor_b / (vapor_a - np.log10(P_actual / 1e5)))
-        activation = 0.5 * (1.0 + np.tanh((T_sat - temp_surface) / 2.0))
+        activation = 0.5 * (1.0 + np.tanh((T_sat - temp_surface) / 20.0))
         if activation > 1e-4:
             P_sat     = 10**(vapor_a - vapor_b / temp_surface) * 1e5
             dP_sat_dT = P_sat * np.log(10) * vapor_b / (temp_surface**2)
             latent_heat_capacity = (latent_heat_vaporization
                                     * (surface_area / g) * dP_sat_dT * activation)
+    
+    # TODO: Turn off for now.
+    latent_heat_capacity = 0.0
 
     heat_cap_atm   = heat_capacity_water * (pressure_H2O * surface_area / g)
     heat_cap_crust = (heat_capacity_mantle * density_crust
@@ -408,8 +411,14 @@ def moODE_dry_solid(
 
     Identical to moODE_solid but without solid-state degassing — the volatile
     source in the solid is exhausted. radius_solid still evolves so tidal
-    remelting episodes can trigger event_mo_starts. Terminated by
-    event_mo_starts when meltfrac_bulk rises above the threshold.
+    remelting episodes can trigger event_mo_starts.
+
+    Phase transition rules (enforced by run_model loop, not events):
+      dry_solid → MO      : allowed (tidal/radiogenic remelting)
+      dry_solid → wet_solid: NEVER — once the solid is desiccated there is no
+                             mechanism to re-wet it. When MO refreezes after a
+                             dry_solid episode the loop checks solid water mass
+                             and dispatches back to dry_solid, not wet_solid.
     """
     constants = params['constants']
     mat       = params['planet']['material']

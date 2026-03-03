@@ -57,6 +57,7 @@ comp_params       = params['planet']['oxide_composition']
 
 integration_method = simulation_params['method']
 integration_rtol   = simulation_params['rtol']
+integration_atol   = simulation_params['atol']
 # integration_rtol = np.array([
 #     1e-4,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
 #     1e-4,   # 1: Eccentricity
@@ -70,8 +71,20 @@ integration_rtol   = simulation_params['rtol']
 #     1e-6,   # 9: Mass Oxygen Solid
 #     1e-3    # 10: Surface Temp 
 # ], dtype=np.float64)
+integration_atol = np.array([
+    1e-6,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
+    1e-5,   # 1: Eccentricity
+    1e-6,   # 2: Star Spin Rate 
+    1e-6,   # 3: Planet Spin Rate 
+    1e-8,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
+    1e-6,   # 5: Solid Radius (Allows the phase boundary to step faster)
+    1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
+    1e-6,   # 7: Mass Water MO/Atm 
+    1e-6,   # 8: Mass Oxygen MO/Atm 
+    1e-6,   # 9: Mass Oxygen Solid
+    1e-6    # 10: Surface Temp 
+], dtype=np.float64)
 
-integration_atol   = simulation_params['atol']
 start_time_sec     = simulation_params['start_time_years'] * constants['seconds_per_year']
 end_time_sec       = simulation_params['end_time_years'] * constants['seconds_per_year']
 tides_on_flag      = simulation_params['tides_on']
@@ -142,7 +155,8 @@ except ValueError:
     base_depth = Rp - Rc
 # Original method:
 # base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
-base_depth = min(base_depth, 900.0e3)   # Model is currently very unstable if the magma ocean is larger than ~900 km thick
+
+# base_depth = min(base_depth, 900.0e3)   # Model is currently very unstable if the magma ocean is larger than ~900 km thick
 Tr0[5] = max(Rp - base_depth, Rc)
 print(f"Initial Magma Ocean Depth {base_depth/1e3:0.2f} km.")
 
@@ -303,7 +317,14 @@ for _phase_idx in range(MAX_PHASES):
 
     prev_phase = phase
     if phase == 'mo':
-        phase = 'wet_solid'
+        # After MO freezes out, check whether the solid mantle is still wet.
+        # If dry_solid was reached before this MO episode, atmospheric water may
+        # be depleted and solid water will be negligible — go straight to dry_solid
+        # rather than wet_solid to avoid an unphysical wet-solid re-entry.
+        if current_y[6] / Mmantle >= dry_threshold:
+            phase = 'wet_solid'
+        else:
+            phase = 'dry_solid'
     elif phase == 'wet_solid':
         # t_events[0] = event_mo_starts, t_events[1] = event_solid_dries
         phase = 'mo' if len(segment.t_events[0]) > 0 else 'dry_solid'
@@ -336,14 +357,49 @@ results = postprocess_magma_ocean(sol, Rp, Rc, Mmantle, gp, OLR, ASR,
 
 t_tot_years = results['t'] / constants['seconds_per_year']
 
-df_results = pd.DataFrame({
-    'time_yr': t_tot_years,
-    'Mantle_T': results['Tr'][4,:],
-    'Surf_T': results['Tr'][10,:],
-    'PO2': results['PO2'],
-    'Patm': results['Patm'],
-})
-df_results.to_csv('results.txt', sep='\t', index=False)
+
+orb_freq_array = np.empty_like(results['Tr'][0,:])
+for i, a_ in enumerate(results['Tr'][0,:]):
+    orb_freq_array[i] = semi_a2orbital_motion(a_, MStar, Mp)
+
+# ---------------------------------------------------------------------------
+# Shared state-vector layout (same for both phase ODEs)
+#   [0]  semi_major_axis   [1]  eccentricity
+#   [2]  spin_freq_host    [3]  spin_freq_planet
+#   [4]  temp_mantle       [5]  radius_solid
+#   [6]  mass_water_solid  [7]  mass_water_atm
+#   [8]  mass_oxygen_atm   [9]  mass_O2_solid
+#   [10] temp_surface
+# ---------------------------------------------------------------------------
+
+# Saving results can be slow and take up disk space. If doing quick adjustments turn off saving.
+SAVE_DATA = True
+
+if SAVE_DATA:
+    df_results = pd.DataFrame({
+        'time_yr': t_tot_years,
+        'semi_major_axis': results['Tr'][0,:] / constants['au'],
+        'orbital_freq': orb_freq_array,
+        'eccentricity': results['Tr'][1,:],
+        'spin_ratio_host': results['Tr'][2,:] / orb_freq_array,
+        'spin_ratio_planet': results['Tr'][3,:] / orb_freq_array,
+        'temp_mantle': results['Tr'][4,:],
+        'radius_solid': results['Tr'][5,:] / 1e3,
+        'mass_water_solid': results['Tr'][6,:] / MH2O,
+        'mass_water_atm': results['Tr'][7,:] / MH2O,
+        'mass_oxygen_atm': results['Tr'][8,:] / MH2O,
+        'mass_O2_solid': results['Tr'][9,:] / MH2O,
+        'temp_surface': results['Tr'][10,:],
+        'PO2': results['PO2'],
+        'Patm': results['Patm'],
+        'tidal_shear': results['tidal_shear']/1e9,
+        'tidal_visc': results['tidal_visc'],
+        'tidal_scale': results['tidal_scale'] * 100,
+        'Q_tid': results['Q_tid'],
+        'Q_rad': results['Q_rad'],
+        'meltfrac': results['meltfrac'] * 100
+    })
+    df_results.to_csv(f'{save_name}_results.txt', sep=',', index=False)
 
 def plot_magma_ocean():
     Q_tidal = results['Q_tid']
@@ -416,11 +472,8 @@ def plot_magma_ocean():
     fig_orb.savefig(f"{save_name}_orbit.png")
 
     # Spin Plot
-    orbital_motion = np.zeros_like(results['Tr'][0,:])
-    for i, semi_a in enumerate(results['Tr'][0,:]):
-        orbital_motion[i] = semi_a2orbital_motion(results['Tr'][0,i], MStar, Mp)
-    spin_host_frac = (results['Tr'][2,:]/orbital_motion)
-    spin_planet_frac = (results['Tr'][3,:]/orbital_motion)
+    spin_host_frac = (results['Tr'][2,:]/orb_freq_array)
+    spin_planet_frac = (results['Tr'][3,:]/orb_freq_array)
     fig_spin, ax_spin = plt.subplots(figsize=(8, 5))
     ax_spin.plot(t_tot_years, spin_planet_frac, color='blue', label='Planet')
     ax_spin.plot(t_tot_years, spin_host_frac, color='red', label='Star')
