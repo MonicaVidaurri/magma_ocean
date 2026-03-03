@@ -49,36 +49,34 @@ def viscosity(
     A_coeff_liquid        = rheo['liquid_visc_pre_exponential'] # Pa s
     B_coeff_liquid        = rheo['liquid_visc_activation_temp'] # K
     temp_reference_liquid = rheo['liquid_visc_ref_temp']        # K
-
-    dynamic_visc_liquid = A_coeff_liquid * np.exp(B_coeff_liquid / (temp_mantle - temp_reference_liquid))
-
-    # --- Solid Mantle Viscosity (Dynamic, Pa·s) ---
     # Arrhenius parameters for solid-state creep
     pre_exponential_solid = rheo['solid_visc_pre_exponential'] # Pa s
     activation_energy     = rheo['solid_visc_activation_energy'] # J/mol
 
+    # --- Solid Mantle Viscosity (Dynamic, Pa·s) ---
+    dynamic_visc_liquid = A_coeff_liquid * np.exp(B_coeff_liquid / (temp_mantle - temp_reference_liquid))
     dynamic_visc_solid = pre_exponential_solid * np.exp(activation_energy / (gas_constant * temp_mantle))
 
-    # --- Rheological Regime Switch ---
-    # The rheology transitions at a critical crystal fraction (phi_c ~ 0.6).
-    # Crystal fraction is (1.0 - melt_fraction).
-    crystal_fraction          = 1.0 - melt_fraction
+    crystal_fraction = 1.0 - melt_fraction
     critical_crystal_fraction = rheo['critical_crystal_fraction']
+    
+    # Solid Regime Viscosity
+    melt_weakening_factor = rheo['melt_weakening_factor']
+    visc_solid_regime = dynamic_visc_solid * np.exp(-melt_weakening_factor * melt_fraction)
 
-    # Constrain melt fraction to physical bounds
-    melt_fraction = np.clip(melt_fraction, 0.0, 1.0)
+    # Liquid Regime Viscosity (with a safety cap to prevent division by zero)
+    relative_solid_effect = crystal_fraction / critical_crystal_fraction
+    safe_relative_effect = min(relative_solid_effect, 0.9999) # Prevents the infinity crash
+    visc_liquid_regime = dynamic_visc_liquid / (1.0 - safe_relative_effect)**2.5
 
-    if crystal_fraction < critical_crystal_fraction:
-        # Liquid-supported regime (Magma Ocean)
-        # Uses a Roscoe-style formulation for the viscosity of a crystal suspension
-        relative_solid_effect = crystal_fraction / critical_crystal_fraction
-        dynamic_viscosity     = dynamic_visc_liquid / (1.0 - relative_solid_effect)**2.5
-        
-    else:
-        # Matrix-supported regime (Solid Mantle)
-        # Melt weakens the solid matrix exponentially
-        melt_weakening_factor = rheo['melt_weakening_factor']
-        dynamic_viscosity     = dynamic_visc_solid * np.exp(-melt_weakening_factor * melt_fraction)
+    # Smooth Logarithmic Blending
+    # Centers the transition at mf = 0.4 with a smooth width of 2% melt fraction
+    transition_width = 0.02
+    blend = 0.5 * (1.0 + np.tanh((melt_fraction - (1.0 - critical_crystal_fraction)) / transition_width))
+    
+    # Smoothly interpolate across the orders of magnitude
+    log_visc = (1.0 - blend) * np.log(visc_solid_regime) + blend * np.log(visc_liquid_regime)
+    dynamic_viscosity = np.exp(log_visc)
 
     # --- Convert to Kinematic Viscosity ---
     kinematic_viscosity = dynamic_viscosity / density_mantle
