@@ -1,9 +1,8 @@
-from math import isclose
 import numpy as np
 
 from TidalPy.toolbox import quick_dual_body_tidal_dissipation
 from TidalPy.constants import G
-
+from TidalPy.utilities.math.numerics import isclose
 
 def calculate_tidal_dissipation(
         eccentricity, orbital_frequency, spin_freq_planet, spin_freq_host,
@@ -30,16 +29,21 @@ def calculate_tidal_dissipation(
     # solid_shear = np.clip(solid_shear, 1.0, 1.0e12)
 
     spin_lock = False
-    if eccentricity < 0.001 and isclose(orbital_frequency, spin_freq_planet):
+    if eccentricity < 0.001 and isclose(orbital_frequency, spin_freq_planet, 1.0e-5, 1.0e-15):
         spin_freq_planet = orbital_frequency
         spin_lock = True
     
     circularization_lock = False
-    if isclose(eccentricity, 0.0):
+    if isclose(eccentricity, 0.0, 1.0e-9, 1.0e-15) or eccentricity < 0.0:
         eccentricity = 0.0
         circularization_lock = True
+    
+    calculate_tides = tides_on_flag
+    if spin_lock and circularization_lock:
+        # No tidal drivers. Turn tides off.
+        calculate_tides = False
 
-    if tides_on_flag:
+    if calculate_tides:
 
         # Unpack other dependent variables
         g_p = G * mass_planet / (radius_planet**2)
@@ -96,7 +100,7 @@ def calculate_tidal_dissipation(
         tidal_heating_h = dissipation_results['host']['tidal_heating']
         tidal_heating_p = dissipation_results['secondary']['tidal_heating']
         
-        if force_spin_lock:
+        if spin_lock:
             dspin_dt_p = 0.0
         if circularization_lock:
             de_dt = 0.0
