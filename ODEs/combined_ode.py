@@ -254,7 +254,7 @@ def moODE_magma_ocean(
     dTr_dt[10] = _surface_temp_ode(
         q_mantle, flux_to_space, Rp, pressure_H2O, g,
         heat_capacity_water, heat_capacity_mantle, density_crust,
-        radius_solid,        # MO column acts as "crust" for surface heat cap
+        Rp - radius_solid,        # MO column acts as "crust" for surface heat cap
         latent_heat_vaporization, mass_water_atm,
         crit_temp_water, vapor_a, vapor_b, temp_surface
     )
