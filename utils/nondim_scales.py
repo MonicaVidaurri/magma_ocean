@@ -7,7 +7,7 @@ class StateScaler:
         Initializes the dimensionless scaling arrays for the Unified ODE.
         """
         # Characteristic Time: 1 Megayear (in seconds)
-        self.t_scale = 3.15569e13  
+        self.t_scale = 3.15569e10
         
         # 11 Dependent Variables for the unified state vector
         self.y_scales = np.array([

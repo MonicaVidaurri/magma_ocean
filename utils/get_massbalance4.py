@@ -174,12 +174,15 @@ def get_massbalance4(
         moles_FeO = max(moles_iron_total - 2.0 * moles_oxygen_total, 0.0)
         moles_FeO1_5_forced = 2.0 * moles_oxygen_total
 
-        # Construct modified composition array.
-        # Note: Mixes mole fractions (0-9) with raw moles (10-11). 
-        # Safe ONLY because get_fO2 takes the ln(ratio) of indices 11 and 10.
+        # Normalize to fractions within the iron pool so the array is
+        # dimensionally consistent. get_fO2 only uses the ratio of indices
+        # [11] and [10], so any common denominator preserves the result.
+        iron_total = moles_FeO + moles_FeO1_5_forced
+        frac_FeO_forced     = moles_FeO / iron_total if iron_total > 0.0 else 0.0
+        frac_FeO1_5_forced  = 1.0 - frac_FeO_forced
         new_composition = np.concatenate([
-            composition[:10], 
-            [moles_FeO, moles_FeO1_5_forced]
+            composition[:10],
+            [frac_FeO_forced, frac_FeO1_5_forced]
         ])
         
         partial_pressure_o2 = get_fO2(melt_temp, atm_pressure, new_composition, params)

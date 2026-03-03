@@ -177,6 +177,8 @@ solidus_slope_low_p = 104.42        # dT/dP slope (low pressure)
 solidus_intercept_low_p = 1420.0    # Solidus intercept (low pressure)
 solidus_slope_high_p = 26.53        # dT/dP slope (high pressure)
 solidus_intercept_high_p = 1825.0   # Solidus intercept (high pressure)
+solidus_crossover_width_km = 30.0   # Tanh half-width for low/high-P solidus branch crossover (km)
+dry_solid_threshold = 1.0e-9        # Solid water mass fraction below which degassing ceases (kg/kg)
 
 latent_heat_vaporization = 2.26e6   # Latent heat of vaporization for water [J/kg]
 
@@ -187,6 +189,7 @@ solubility_exponent_H2O = 0.74      # Empirical exponent 'n'
 
 [planet.convection]
 melt_fraction_threshold = 0.4       # Dimensionless melt threshold for rheological shift
+phase_transition_width = 0.03       # Tanh blending half-width (melt fraction units)
 nusselt_coefficient = 0.089         # Nusselt scaling for hard-turbulent regime (Ra^1/3)
 spreading_time_factor = 5.38        # Geometric scaling for boundary layer instability
 
@@ -204,6 +207,12 @@ liquid_visc_ref_temp = 1000.0
 critical_crystal_fraction = 0.6     # Critical crystal fraction for rheological breakdown
 melt_weakening_factor = 26.0        # Exponential weakening factor for melt in solid matrix
 
+# Shear Modulus Melt Fraction Softening
+solid_shear_modulus = 60.0e9        # Solid shear modulus (Pa)
+liquid_shear_modulus = 1000.0       # Liquid shear modulus (Pa)
+melt_transition_width = 0.05        # Break down duration
+shear_solid_softening = 8.0         # How much the shear breaks down during the transition.
+
 [planet.rheology.sandu_2011]
 # Water-weakened olivine creep parameters
 visc_reference = 1.24e14            # Reference viscosity (Pa s)
@@ -217,21 +226,10 @@ fugacity_poly_c3 = 0.0337
 
 [planet.tides]
 # Planetary tidal dissipation properties
-shear_modulus_solid = 60.0e9        # Rigidity of solid mantle (Pa)
-shear_modulus_liquid_limit = 1.0e-5 # Effective rigidity of liquid (Pa)
 rheology_model = "Andrade"
 fixed_k2 = 0.3                      # Tidal Love number
 fixed_Q = 3.0e7                     # Tidal dissipation quality factor
 obliquity = 0.0                     # Planetary obliquity (rad)
-
-# Shear Modulus Melting Model (e.g., Henning et al.)
-crit_melt_frac = 0.5                # Melt fraction at which shear breaks down
-melt_transition_width = 0.05
-shear_melt_param_1 = 40000.0
-shear_melt_param_2 = 25.0
-shear_melt_falloff_slope = 700.0
-temp_solidus_ref = 1420.0           # Baseline for temperature transition calculation
-temp_liquidus_ref = 1825.0          # Baseline for temperature transition calculation
 
 
 # ==============================================================================

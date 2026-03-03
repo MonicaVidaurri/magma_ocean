@@ -1,4 +1,3 @@
-import numpy as np
 from .viscosity import viscosity
 
 def mantleheatflux(
@@ -16,9 +15,8 @@ def mantleheatflux(
     Calculates the convective heat flux and boundary layer properties of the mantle 
     using parameterized Rayleigh-Bénard convection scaling.
 
-    This function dynamically adjusts the convective depth based on the rheological 
-    state of the mantle (e.g., truncating the convective zone to the liquid magma 
-    ocean if the melt fraction exceeds the rheological transition threshold).
+    The convective depth is set by the caller via radius_solid; this function
+    does not determine the phase internally.
 
     Parameters
     ----------
@@ -27,11 +25,13 @@ def mantleheatflux(
     temp_surface : float
         Surface temperature of the planet (K).
     radius_solid : float
-        Radius of the solidification front / base of the magma ocean (m).
+        Base of the active convective zone (m). The caller sets this to the
+        solidification front during the MO phase, or to radius_core in the
+        solid-mantle phase. radius_core is accepted but unused.
     radius_planet : float
         Total radius of the planet (m).
     radius_core : float
-        Radius of the planetary core (m).
+        Unused; kept for call-site compatibility.
     gravity : float
         Surface gravitational acceleration (m/s^2).
     density_mantle : float
@@ -67,15 +67,9 @@ def mantleheatflux(
     heat_capacity        = thermo['specific_heat_mantle'] # cp (J/kg/K)
 
     # --- Convective Geometry ---
-    # Rheological transition: If melt fraction > threshold, it is a fluid-supported 
-    # magma ocean. Convection is restricted to the liquid layer above the solidus.
-    melt_fraction_threshold = conv['melt_fraction_threshold']
-
-    if melt_fraction >= melt_fraction_threshold:
-        depth_convective_zone = radius_planet - radius_solid
-    else:
-        # Solid-state convection throughout the entire mantle
-        depth_convective_zone = radius_planet - radius_core
+    # The caller sets radius_solid to the base of the active convective zone:
+    # the solidification front during the MO phase, or radius_core in the solid phase.
+    depth_convective_zone = radius_planet - radius_solid
 
     # --- Fluid Dynamics Properties ---
     # Thermal diffusivity (m^2/s)

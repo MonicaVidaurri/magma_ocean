@@ -2,13 +2,13 @@
 # TRAPPIST-1e Configuration File
 # ==============================================================================
 [simulation]
-version = "0.4"  # simulation version just for tracking changes.
+version = "0.8d"  # simulation version just for tracking changes.
 # Primary numerical solver and integration settings
-method = "BDF"
-rtol = 1.0e-6
-atol = 1.0e-8
+method = "LSODA"
+rtol = 3.0e-5
+atol = 1.0e-6
 start_time_years = 1.0
-end_time_years = 8.0e9
+end_time_years = 9.5e8 # 1.0e10
 tides_on = true
 
 [numerical]
@@ -43,11 +43,11 @@ radius_core_relative = 0.55         # Consistent with Earth-like iron core (Agol
 core_mass_fraction = 0.32           # Earth-like mass fraction (~32%)
 ocean_mass_multiplier = 2.0         # 2 Earth Oceans (TRAPPIST-1e is rockier than b/c/f/g)
 initial_mantle_temp = 3000.0        # Post-impact magma ocean start
-initial_spin_multiplier = 5.0       # Initial Spin / Orbital motion
+initial_spin_multiplier = 4.0       # Initial Spin / Orbital motion
 
 [planet.orbit]
 initial_semi_major_axis = 0.02925   # (au)
-initial_eccentricity = 0.2          # 
+initial_eccentricity = 0.3         # 
 
 [planet.atmosphere.escape]
 xuv_model = 1                       # Continuous decay

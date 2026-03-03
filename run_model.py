@@ -4,7 +4,7 @@ import pandas as pd
 from functools import partial
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-
+from scipy.optimize import root_scalar
 try:
     import tomllib
 except ImportError:
@@ -23,11 +23,14 @@ if USE_CYRK:
 else:
     solve_ivp = scisolve_ivp
 
-from ODEs.combined_ode import moODE_unified
+from types import SimpleNamespace
+from ODEs.combined_ode import moODE_magma_ocean, moODE_solid, moODE_dry_solid, make_phase_events
 from utils.postprocess import postprocess_magma_ocean
 from utils.get_comp import get_comp
 from utils.general_utils import merge_dicts
 from utils.nondim_scales import StateScaler
+from utils.mantle_grid import build_mantle_grid
+from utils.get_melt_fractions import get_melt_fractions
 from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 
 # =====================================================================
@@ -55,6 +58,33 @@ comp_params       = params['planet']['oxide_composition']
 integration_method = simulation_params['method']
 integration_rtol   = simulation_params['rtol']
 integration_atol   = simulation_params['atol']
+# integration_rtol = np.array([
+#     1e-4,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
+#     1e-4,   # 1: Eccentricity
+#     1e-4,   # 2: Star Spin Rate 
+#     1e-4,   # 3: Planet Spin Rate 
+#     1e-3,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
+#     1e-7,   # 5: Solid Radius (Allows the phase boundary to step faster)
+#     1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
+#     1e-6,   # 7: Mass Water MO/Atm 
+#     1e-6,   # 8: Mass Oxygen MO/Atm 
+#     1e-6,   # 9: Mass Oxygen Solid
+#     1e-3    # 10: Surface Temp 
+# ], dtype=np.float64)
+integration_atol = np.array([
+    1e-6,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
+    1e-5,   # 1: Eccentricity
+    1e-6,   # 2: Star Spin Rate 
+    1e-6,   # 3: Planet Spin Rate 
+    1e-8,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
+    1e-6,   # 5: Solid Radius (Allows the phase boundary to step faster)
+    1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
+    1e-6,   # 7: Mass Water MO/Atm 
+    1e-6,   # 8: Mass Oxygen MO/Atm 
+    1e-6,   # 9: Mass Oxygen Solid
+    1e-6    # 10: Surface Temp 
+], dtype=np.float64)
+
 start_time_sec     = simulation_params['start_time_years'] * constants['seconds_per_year']
 end_time_sec       = simulation_params['end_time_years'] * constants['seconds_per_year']
 tides_on_flag      = simulation_params['tides_on']
@@ -75,6 +105,7 @@ Mp = planet_params['mass_planet_relative'] * constants['mass_earth']
 Mmantle = (1.0 - planet_params['core_mass_fraction']) * Mp
 rho_mantle = Mmantle / ((4.0 / 3.0) * np.pi * (Rp**3 - Rc**3))
 gp = constants['G'] * Mp / Rp**2
+params['_grid'] = build_mantle_grid(Rp, Rc, gp, Mmantle, params)
 
 initial_semi_major_axis = orbit_params['initial_semi_major_axis'] * constants['au']
 Fstel = LStar / (4.0 * np.pi * initial_semi_major_axis**2)
@@ -103,15 +134,39 @@ Tr0[2] = 2.0 * np.pi / (86400.0 * star_params['spin_days'])
 Tr0[3] = planet_params['initial_spin_multiplier'] * semi_a2orbital_motion(initial_semi_major_axis, MStar, Mp)
 Tr0[4] = planet_params['initial_mantle_temp']
 
-base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
-Tr0[5] = max(Rp - base_depth, Rc) 
+# Find initial magma ocean depth based on temperature.
+max_mantle_depth = Rp - Rc
+def temp_difference(z):
+    """ Finds the exact intersection of the adiabat and piecewise solidus. """
+    T_ad = Tr0[4] + Tr0[4] * (alpha_therm * gp * z / Cp)
+    P_gpa = (rho_mantle * gp * z) / 1e9
+    
+    T_sol_low = thermo_params['solidus_slope_low_p'] * P_gpa + thermo_params['solidus_intercept_low_p']
+    T_sol_high = thermo_params['solidus_slope_high_p'] * P_gpa + thermo_params['solidus_intercept_high_p']
+    T_sol = min(T_sol_low, T_sol_high)
+    
+    return T_ad - T_sol
+
+try:
+    res = root_scalar(temp_difference, bracket=[0.0, Rp - Rc], method='brentq')
+    base_depth = res.root
+except ValueError:
+    # If the bracket fails, the mantle is hotter than the solidus at the CMB
+    base_depth = Rp - Rc
+# Original method:
+# base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
+
+# base_depth = min(base_depth, 900.0e3)   # Model is currently very unstable if the magma ocean is larger than ~900 km thick
+Tr0[5] = max(Rp - base_depth, Rc)
+print(f"Initial Magma Ocean Depth {base_depth/1e3:0.2f} km.")
 
 Mmo0 = (4.0 / 3.0) * np.pi * rho_mantle * (Rp**3 - Tr0[5]**3)
 
 Tr0[6] = MH2O - FH2O * Mmo0
 Tr0[7] = FH2O * Mmo0 
-Tr0[8] = FeOt * Fe3_Fet * Mmo0 * (muO / 2.0 / muFeO1_5)
-Tr0[9] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2.0 / muFeO1_5)
+muFeO = comp_params['molar_mass_FeO']
+Tr0[8] = FeOt * Fe3_Fet * Mmo0 * (muO / 2.0 / muFeO)
+Tr0[9] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2.0 / muFeO)
 Tr0[10] = Tr0[4] - 1.0
 
 # =====================================================================
@@ -177,20 +232,119 @@ def monitor_ode(fun, t_span, y0, scaler=None, events=None, **kwargs):
 
     return sol
 
-unified_ode = partial(
-    moODE_unified, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho_mantle=rho_mantle, g=gp,
-    Ts=Ts, Ps=Ps, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt, 
-    Temp_K=Temp_K, P_Pa=P_Pa, tsat=tsat_sec, Mp=Mp, LStar=LStar, Rh=host_radius, 
+# Frozen keyword args shared by both phase ODEs (identical signatures)
+_frozen = dict(
+    Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho_mantle=rho_mantle, g=gp,
+    Ts=Ts, Ps=Ps, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt,
+    Temp_K=Temp_K, P_Pa=P_Pa, tsat=tsat_sec, Mp=Mp, LStar=LStar, Rh=host_radius,
     Mh=MStar, params=params, tides_on_flag=tides_on_flag
 )
+mo_ode    = partial(moODE_magma_ocean, **_frozen)
+solid_ode = partial(moODE_solid,       **_frozen)
+dry_ode   = partial(moODE_dry_solid,   **_frozen)
+
+event_mo_ends, event_mo_starts, event_solid_dries = make_phase_events(params, Mmantle)
 
 scaler = StateScaler(a0=initial_semi_major_axis, Rp=Rp, M_ocean=MH2O)
 
-sol = monitor_ode(unified_ode, t_span=(start_time_sec, end_time_sec), scaler=scaler,
-                  y0=Tr0, method=integration_method,
-                  rtol=integration_rtol, atol=integration_atol)
+# Determine which phase we start in
+mf_threshold  = params['planet']['convection']['melt_fraction_threshold']
+dry_threshold = params['planet']['thermodynamics'].get('dry_solid_threshold', 1e-9)
+_, meltfrac_init, _ = get_melt_fractions(Tr0[4], params['_grid'])
+if meltfrac_init >= mf_threshold:
+    phase = 'mo'
+elif Tr0[6] / Mmantle < dry_threshold:
+    phase = 'dry_solid'
+else:
+    phase = 'wet_solid'
+print(f"Starting phase: {phase} (meltfrac_bulk = {meltfrac_init:.3f})")
 
-print("Simulation Complete:")
+# =====================================================================
+# --- PHASE-CHAINING INTEGRATION LOOP ---
+# =====================================================================
+# Each solver segment handles exactly one phase (MO or solid).  A terminal
+# event flips the phase flag and the loop restarts.  This lets each solver
+# work on a continuous, smooth problem and naturally handles freeze-remelt.
+
+_PHASE_LABELS = {'mo': 'Magma Ocean', 'wet_solid': 'Wet Solid', 'dry_solid': 'Dry Solid'}
+
+MAX_PHASES = 20
+events_encountered = dict()
+t_list     = []
+y_list     = []
+current_y  = Tr0
+t_current  = start_time_sec
+run_success = True
+
+total_years = (end_time_sec - start_time_sec) / constants['seconds_per_year']
+
+for _phase_idx in range(MAX_PHASES):
+    print(f"Working on phase {_phase_idx}:: {_PHASE_LABELS[phase]}")
+
+    if t_current >= end_time_sec:
+        break
+    elif t_current != start_time_sec:
+        events_encountered[phase] = t_current / constants['seconds_per_year']
+
+    if phase == 'mo':
+        ode_fun      = mo_ode
+        phase_events = [event_mo_ends]
+    elif phase == 'wet_solid':
+        ode_fun      = solid_ode
+        phase_events  = [event_mo_starts, event_solid_dries]
+    else:  # 'dry_solid'
+        ode_fun      = dry_ode
+        phase_events = [event_mo_starts]
+
+    segment = monitor_ode(
+        ode_fun, (t_current, end_time_sec), current_y,
+        scaler=scaler, events=phase_events,
+        method=integration_method,
+        rtol=integration_rtol,
+        atol=integration_atol,
+    )
+
+    if not segment.success:
+        print(f"\nIntegration failed at "
+              f"t = {segment.t[-1] / constants['seconds_per_year']:.3e} yr: {segment.message}")
+        run_success = False
+        break
+
+    t_current = segment.t[-1]
+    current_y = segment.y[:, -1]
+    t_list.append(segment.t)
+    y_list.append(segment.y)
+
+    prev_phase = phase
+    if phase == 'mo':
+        # After MO freezes out, check whether the solid mantle is still wet.
+        # If dry_solid was reached before this MO episode, atmospheric water may
+        # be depleted and solid water will be negligible — go straight to dry_solid
+        # rather than wet_solid to avoid an unphysical wet-solid re-entry.
+        if current_y[6] / Mmantle >= dry_threshold:
+            phase = 'wet_solid'
+        else:
+            phase = 'dry_solid'
+    elif phase == 'wet_solid':
+        # t_events[0] = event_mo_starts, t_events[1] = event_solid_dries
+        phase = 'mo' if len(segment.t_events[0]) > 0 else 'dry_solid'
+    else:  # 'dry_solid'
+        phase = 'mo'
+
+    print(f"\n Completed Phase {_phase_idx}:: '{_PHASE_LABELS[prev_phase]}' "
+          f"at t = {t_current / constants['seconds_per_year']:.3e} yr  →  {_PHASE_LABELS[phase]}")
+
+# Concatenate all segments into a single solution-like object
+t_all = np.concatenate(t_list)
+y_all = np.concatenate(y_list, axis=1)
+sol   = SimpleNamespace(
+    t       = t_all,
+    y       = y_all,
+    success = run_success,
+    message = f"Phase-chained integration ({len(t_list)} segment(s)).",
+)
+
+print("\nSimulation Complete:")
 print(f"\t Success  = {sol.success}.")
 print(f"\t Message  = {sol.message}.")
 print(f"\t End time = {sol.t[-1] / constants['seconds_per_year']:0.3e} Years.")
@@ -203,14 +357,49 @@ results = postprocess_magma_ocean(sol, Rp, Rc, Mmantle, gp, OLR, ASR,
 
 t_tot_years = results['t'] / constants['seconds_per_year']
 
-df_results = pd.DataFrame({
-    'time_yr': t_tot_years,
-    'Mantle_T': results['Tr'][4,:],
-    'Surf_T': results['Tr'][10,:],
-    'PO2': results['PO2'],
-    'Patm': results['Patm'],
-})
-df_results.to_csv('results.txt', sep='\t', index=False)
+
+orb_freq_array = np.empty_like(results['Tr'][0,:])
+for i, a_ in enumerate(results['Tr'][0,:]):
+    orb_freq_array[i] = semi_a2orbital_motion(a_, MStar, Mp)
+
+# ---------------------------------------------------------------------------
+# Shared state-vector layout (same for both phase ODEs)
+#   [0]  semi_major_axis   [1]  eccentricity
+#   [2]  spin_freq_host    [3]  spin_freq_planet
+#   [4]  temp_mantle       [5]  radius_solid
+#   [6]  mass_water_solid  [7]  mass_water_atm
+#   [8]  mass_oxygen_atm   [9]  mass_O2_solid
+#   [10] temp_surface
+# ---------------------------------------------------------------------------
+
+# Saving results can be slow and take up disk space. If doing quick adjustments turn off saving.
+SAVE_DATA = True
+
+if SAVE_DATA:
+    df_results = pd.DataFrame({
+        'time_yr': t_tot_years,
+        'semi_major_axis': results['Tr'][0,:] / constants['au'],
+        'orbital_freq': orb_freq_array,
+        'eccentricity': results['Tr'][1,:],
+        'spin_ratio_host': results['Tr'][2,:] / orb_freq_array,
+        'spin_ratio_planet': results['Tr'][3,:] / orb_freq_array,
+        'temp_mantle': results['Tr'][4,:],
+        'radius_solid': results['Tr'][5,:] / 1e3,
+        'mass_water_solid': results['Tr'][6,:] / MH2O,
+        'mass_water_atm': results['Tr'][7,:] / MH2O,
+        'mass_oxygen_atm': results['Tr'][8,:] / MH2O,
+        'mass_O2_solid': results['Tr'][9,:] / MH2O,
+        'temp_surface': results['Tr'][10,:],
+        'PO2': results['PO2'],
+        'Patm': results['Patm'],
+        'tidal_shear': results['tidal_shear']/1e9,
+        'tidal_visc': results['tidal_visc'],
+        'tidal_scale': results['tidal_scale'] * 100,
+        'Q_tid': results['Q_tid'],
+        'Q_rad': results['Q_rad'],
+        'meltfrac': results['meltfrac'] * 100
+    })
+    df_results.to_csv(f'{save_name}_results.txt', sep=',', index=False)
 
 def plot_magma_ocean():
     Q_tidal = results['Q_tid']
@@ -219,10 +408,13 @@ def plot_magma_ocean():
     Q_radiogenic[Q_radiogenic == 0.0] = np.nan
 
     def add_event_lines(axis):
-        for tc in results['t_crust']:
-            axis.axvline(x=tc, ls=':', c='k')
-        for td in results['t_degas']:
-            axis.axvline(x=td, ls='-.', c='k')
+        phase_ls = {
+            'mo': '--',
+            'wet_solid': ':',
+            'dry_solid': '-.'
+        }
+        for phase_type, phase_time in events_encountered.items():
+            axis.axvline(x=phase_time, ls=phase_ls[phase_type], c='k')
 
     # Temperature Plot
     fig_tmp, ax_tmp = plt.subplots(figsize=(8, 5))
@@ -280,11 +472,8 @@ def plot_magma_ocean():
     fig_orb.savefig(f"{save_name}_orbit.png")
 
     # Spin Plot
-    orbital_motion = np.zeros_like(results['Tr'][0,:])
-    for i, semi_a in enumerate(results['Tr'][0,:]):
-        orbital_motion[i] = semi_a2orbital_motion(results['Tr'][0,i], MStar, Mp)
-    spin_host_frac = (results['Tr'][2,:]/orbital_motion)
-    spin_planet_frac = (results['Tr'][3,:]/orbital_motion)
+    spin_host_frac = (results['Tr'][2,:]/orb_freq_array)
+    spin_planet_frac = (results['Tr'][3,:]/orb_freq_array)
     fig_spin, ax_spin = plt.subplots(figsize=(8, 5))
     ax_spin.plot(t_tot_years, spin_planet_frac, color='blue', label='Planet')
     ax_spin.plot(t_tot_years, spin_host_frac, color='red', label='Star')
@@ -300,44 +489,48 @@ def plot_magma_ocean():
     fig_spin.savefig(f"{save_name}_spin.png")
 
     # Tidal Susceptibility Plot
-    fig_susp, ax_susp = plt.subplots(figsize=(8, 5))
-    # We need to make extra room on the left for the second y-axis
-    fig_susp.subplots_adjust(left=0.25)
+    fig_susp, ax_susp = plt.subplots(figsize=(11, 6)) 
+    # Left=0.25 leaves 25% space on the left. Right=0.75 leaves 25% space on the right.
+    fig_susp.subplots_adjust(left=0.2, right=0.8) 
     ax_susp.plot(t_tot_years, results['tidal_shear']/1e9, color='red')
     ax_susp.set_xlabel('Time [yr]')
     ax_susp.set_ylabel('Shear Modulus [GPa]', color='red')
     ax_susp.set_yscale('linear')
     ax_susp.set_xscale('log')
+    ax_susp.tick_params(axis='y', labelcolor='red')
+    ax_susp.spines['left'].set_color('red')
+    ax_susp.grid(True)
     ax_visc = ax_susp.twinx()
-    # Move the ticks and label to the left side
-    ax_visc.yaxis.set_ticks_position('left')
+    ax_visc.spines['left'].set_position(('axes', -0.15)) # Move outward by 20%
+    ax_visc.spines['left'].set_visible(True)
+    ax_visc.spines['right'].set_visible(False)
     ax_visc.yaxis.set_label_position('left')
-    # Offset the spine outward by 20% of the axes width so it doesn't overlap Axis 1
-    ax_visc.spines['left'].set_position(('axes', -0.2))
-    ax_visc.spines['left'].set_visible(True) # Required because twinx hides the left spine by default
-    # Plot and color
+    ax_visc.yaxis.set_ticks_position('left')
     ax_visc.plot(t_tot_years, results['tidal_visc'], color='blue')
     ax_visc.set_ylabel('Viscosity', color='blue')
     ax_visc.set_yscale('log')
     ax_visc.tick_params(axis='y', labelcolor='blue')
     ax_visc.spines['left'].set_color('blue')
-    # Optional: Hide the right spine on ax_visc to keep things clean
-    ax_visc.spines['right'].set_visible(False)
-    # Color the ticks and the spine
-    ax_susp.tick_params(axis='y', labelcolor='red')
-    ax_susp.spines['left'].set_color('red')
-    # Create another axis that shares the same x-axis
     ax_tidal = ax_susp.twinx()
-    # Plot and color (default twinx behavior puts this on the right)
+    ax_tidal.spines['right'].set_visible(True)
+    ax_tidal.spines['left'].set_visible(False)
     ax_tidal.plot(t_tot_years, results['tidal_scale'] * 100, color='green')
     ax_tidal.set_ylabel('Tidal Scale [%]', color='green')
+    ax_tidal.set_yscale('linear')
     ax_tidal.tick_params(axis='y', labelcolor='green')
     ax_tidal.spines['right'].set_color('green')
-    ax_susp.set_yscale('linear')
+    ax_mf = ax_susp.twinx() 
+    ax_mf.spines['right'].set_position(('axes', 1.15)) # Move outward by 20%
+    ax_mf.spines['right'].set_visible(True)
+    ax_mf.spines['left'].set_visible(False)
+    ax_mf.plot(t_tot_years, 100 * results['meltfrac'], color='black') 
+    ax_mf.set_ylabel('Solid Mantle Melt Fraction [%]', color='black')
+    ax_mf.set_yscale('linear')
+    ax_mf.tick_params(axis='y', labelcolor='black')
+    ax_mf.spines['right'].set_color('black')
+    
     ax_susp.set_title('Tidal Susceptibility Evolution')
-    ax_susp.grid(True)
-    add_event_lines(ax_orb)
-    fig_susp.tight_layout()
+    add_event_lines(ax_susp) 
     fig_susp.savefig(f"{save_name}_tidal_suscept.png")
 
     plt.show()
