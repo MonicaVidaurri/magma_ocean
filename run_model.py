@@ -155,8 +155,7 @@ except ValueError:
     base_depth = Rp - Rc
 # Original method:
 # base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
-
-# base_depth = min(base_depth, 900.0e3)   # Model is currently very unstable if the magma ocean is larger than ~900 km thick
+# base_depth = min(base_depth, 900.0e3) 
 Tr0[5] = max(Rp - base_depth, Rc)
 print(f"Initial Magma Ocean Depth {base_depth/1e3:0.2f} km.")
 
@@ -284,7 +283,7 @@ for _phase_idx in range(MAX_PHASES):
     if t_current >= end_time_sec:
         break
     elif t_current != start_time_sec:
-        events_encountered[phase] = t_current / constants['seconds_per_year']
+        events_encountered[t_current / constants['seconds_per_year']] = phase
 
     if phase == 'mo':
         ode_fun      = mo_ode
@@ -413,7 +412,7 @@ def plot_magma_ocean():
             'wet_solid': ':',
             'dry_solid': '-.'
         }
-        for phase_type, phase_time in events_encountered.items():
+        for phase_time, phase_type in events_encountered.items():
             axis.axvline(x=phase_time, ls=phase_ls[phase_type], c='k')
 
     # Temperature Plot
