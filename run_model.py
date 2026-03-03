@@ -23,12 +23,14 @@ if USE_CYRK:
 else:
     solve_ivp = scisolve_ivp
 
-from ODEs.combined_ode import moODE_unified
+from types import SimpleNamespace
+from ODEs.combined_ode import moODE_magma_ocean, moODE_solid, make_mo_phase_events
 from utils.postprocess import postprocess_magma_ocean
 from utils.get_comp import get_comp
 from utils.general_utils import merge_dicts
 from utils.nondim_scales import StateScaler
 from utils.mantle_grid import build_mantle_grid
+from utils.get_melt_fractions import get_melt_fractions
 from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 
 # =====================================================================
@@ -216,20 +218,97 @@ def monitor_ode(fun, t_span, y0, scaler=None, events=None, **kwargs):
 
     return sol
 
-unified_ode = partial(
-    moODE_unified, Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho_mantle=rho_mantle, g=gp,
-    Ts=Ts, Ps=Ps, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt, 
-    Temp_K=Temp_K, P_Pa=P_Pa, tsat=tsat_sec, Mp=Mp, LStar=LStar, Rh=host_radius, 
+# Frozen keyword args shared by both phase ODEs (identical signatures)
+_frozen = dict(
+    Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho_mantle=rho_mantle, g=gp,
+    Ts=Ts, Ps=Ps, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt,
+    Temp_K=Temp_K, P_Pa=P_Pa, tsat=tsat_sec, Mp=Mp, LStar=LStar, Rh=host_radius,
     Mh=MStar, params=params, tides_on_flag=tides_on_flag
 )
+mo_ode    = partial(moODE_magma_ocean, **_frozen)
+solid_ode = partial(moODE_solid,       **_frozen)
+
+event_mo_ends, event_mo_starts = make_mo_phase_events(params)
 
 scaler = StateScaler(a0=initial_semi_major_axis, Rp=Rp, M_ocean=MH2O)
 
-sol = monitor_ode(unified_ode, t_span=(start_time_sec, end_time_sec), scaler=scaler,
-                  y0=Tr0, method=integration_method,
-                  rtol=integration_rtol, atol=integration_atol)
+# Determine which phase we start in
+mf_threshold = params['planet']['convection']['melt_fraction_threshold']
+_, meltfrac_init, _ = get_melt_fractions(Tr0[4], params['_grid'])
+is_mo = bool(meltfrac_init >= mf_threshold)
+print(f"Starting phase: {'Magma Ocean' if is_mo else 'Solid Mantle'} "
+      f"(meltfrac_bulk = {meltfrac_init:.3f})")
 
-print("Simulation Complete:")
+# =====================================================================
+# --- PHASE-CHAINING INTEGRATION LOOP ---
+# =====================================================================
+# Each solver segment handles exactly one phase (MO or solid).  A terminal
+# event flips the phase flag and the loop restarts.  This lets each solver
+# work on a continuous, smooth problem and naturally handles freeze-remelt.
+
+MAX_PHASES = 20
+t_list     = []
+y_list     = []
+current_y  = Tr0
+t_current  = start_time_sec
+run_success = True
+
+total_years = (end_time_sec - start_time_sec) / constants['seconds_per_year']
+
+for _phase_idx in range(MAX_PHASES):
+    
+    if is_mo:
+        print(f"Working pn phase {_phase_idx}:: Magma Ocean")
+    else:
+        print(f"Working pn phase {_phase_idx}:: Magma Frozen")
+
+    if t_current >= end_time_sec:
+        break
+
+    if is_mo:
+        ode_fun      = mo_ode
+        phase_events = [event_mo_ends]
+    else:
+        ode_fun      = solid_ode
+        phase_events = [event_mo_starts]
+
+    segment = monitor_ode(
+        ode_fun, (t_current, end_time_sec), current_y,
+        scaler=scaler, events=phase_events,
+        method=integration_method,
+        rtol=integration_rtol,
+        atol=integration_atol,
+    )
+
+    if not segment.success:
+        # solver failure
+        print(f"\nIntegration failed at "
+                f"t = {segment.t[-1] / constants['seconds_per_year']:.3e} yr: {seg.message}")
+        run_success = False
+        break
+
+    # status == 1: terminal event → flip phase and continue
+    t_current = segment.t[-1]
+    current_y = segment.y[:, -1]
+    t_list.append(segment.t)
+    y_list.append(segment.y)
+    if is_mo:
+        print(f"\n Completed Phase {_phase_idx}:: 'Magma Ocean' at t = {t_current / constants['seconds_per_year']:.3e} yr")
+    else:
+        print(f"\n Completed Phase {_phase_idx}:: 'Magma Frozen' at t = {t_current / constants['seconds_per_year']:.3e} yr")
+    is_mo = not is_mo
+
+# Concatenate all segments into a single solution-like object
+t_all = np.concatenate(t_list)
+y_all = np.concatenate(y_list, axis=1)
+sol   = SimpleNamespace(
+    t       = t_all,
+    y       = y_all,
+    success = run_success,
+    message = f"Phase-chained integration ({len(t_list)} segment(s)).",
+)
+
+print("\nSimulation Complete:")
 print(f"\t Success  = {sol.success}.")
 print(f"\t Message  = {sol.message}.")
 print(f"\t End time = {sol.t[-1] / constants['seconds_per_year']:0.3e} Years.")
