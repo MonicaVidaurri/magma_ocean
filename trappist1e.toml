@@ -2,14 +2,14 @@
 # TRAPPIST-1e Configuration File
 # ==============================================================================
 [simulation]
-version = "0.7"  # simulation version just for tracking changes.
+version = "0.8"  # simulation version just for tracking changes.
 # Primary numerical solver and integration settings
 method = "LSODA"
-rtol = 3.0e-7
-atol = 1.0e-10
+rtol = 3.0e-5
+atol = 1.0e-6
 start_time_years = 1.0
 end_time_years = 1.0e10
-tides_on = true
+tides_on = false
 
 [numerical]
 melt_grid_step = 5000.0            # 5km steps for mantle integration

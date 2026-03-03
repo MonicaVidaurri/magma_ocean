@@ -177,6 +177,8 @@ solidus_slope_low_p = 104.42        # dT/dP slope (low pressure)
 solidus_intercept_low_p = 1420.0    # Solidus intercept (low pressure)
 solidus_slope_high_p = 26.53        # dT/dP slope (high pressure)
 solidus_intercept_high_p = 1825.0   # Solidus intercept (high pressure)
+solidus_crossover_width_km = 30.0   # Tanh half-width for low/high-P solidus branch crossover (km)
+dry_solid_threshold = 1.0e-9        # Solid water mass fraction below which degassing ceases (kg/kg)
 
 latent_heat_vaporization = 2.26e6   # Latent heat of vaporization for water [J/kg]
 

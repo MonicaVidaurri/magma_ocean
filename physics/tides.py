@@ -29,8 +29,15 @@ def calculate_tidal_dissipation(
     # solid_viscosity = np.clip(solid_viscosity, 1.0, 1.0e35)
     # solid_shear = np.clip(solid_shear, 1.0, 1.0e12)
 
+    spin_lock = False
     if eccentricity < 0.001 and isclose(orbital_frequency, spin_freq_planet):
         spin_freq_planet = orbital_frequency
+        spin_lock = True
+    
+    circularization_lock = False
+    if isclose(eccentricity, 0.0):
+        eccentricity = 0.0
+        circularization_lock = True
 
     if tides_on_flag:
 
@@ -88,6 +95,12 @@ def calculate_tidal_dissipation(
         dspin_dt_p      = dissipation_results['secondary']['spin_rate_derivative']
         tidal_heating_h = dissipation_results['host']['tidal_heating']
         tidal_heating_p = dissipation_results['secondary']['tidal_heating']
+        
+        if force_spin_lock:
+            dspin_dt_p = 0.0
+        if circularization_lock:
+            de_dt = 0.0
+
     else:
         da_dt           = 0.0
         de_dt           = 0.0

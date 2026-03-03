@@ -24,7 +24,7 @@ else:
     solve_ivp = scisolve_ivp
 
 from types import SimpleNamespace
-from ODEs.combined_ode import moODE_magma_ocean, moODE_solid, make_mo_phase_events
+from ODEs.combined_ode import moODE_magma_ocean, moODE_solid, moODE_dry_solid, make_phase_events
 from utils.postprocess import postprocess_magma_ocean
 from utils.get_comp import get_comp
 from utils.general_utils import merge_dicts
@@ -57,19 +57,19 @@ comp_params       = params['planet']['oxide_composition']
 
 integration_method = simulation_params['method']
 integration_rtol   = simulation_params['rtol']
-integration_rtol = np.array([
-    1e-4,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
-    1e-4,   # 1: Eccentricity
-    1e-4,   # 2: Star Spin Rate 
-    1e-4,   # 3: Planet Spin Rate 
-    1e-3,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
-    1e-7,   # 5: Solid Radius (Allows the phase boundary to step faster)
-    1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
-    1e-6,   # 7: Mass Water MO/Atm 
-    1e-6,   # 8: Mass Oxygen MO/Atm 
-    1e-6,   # 9: Mass Oxygen Solid
-    1e-3    # 10: Surface Temp 
-], dtype=np.float64)
+# integration_rtol = np.array([
+#     1e-4,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
+#     1e-4,   # 1: Eccentricity
+#     1e-4,   # 2: Star Spin Rate 
+#     1e-4,   # 3: Planet Spin Rate 
+#     1e-3,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
+#     1e-7,   # 5: Solid Radius (Allows the phase boundary to step faster)
+#     1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
+#     1e-6,   # 7: Mass Water MO/Atm 
+#     1e-6,   # 8: Mass Oxygen MO/Atm 
+#     1e-6,   # 9: Mass Oxygen Solid
+#     1e-3    # 10: Surface Temp 
+# ], dtype=np.float64)
 
 integration_atol   = simulation_params['atol']
 start_time_sec     = simulation_params['start_time_years'] * constants['seconds_per_year']
@@ -227,17 +227,23 @@ _frozen = dict(
 )
 mo_ode    = partial(moODE_magma_ocean, **_frozen)
 solid_ode = partial(moODE_solid,       **_frozen)
+dry_ode   = partial(moODE_dry_solid,   **_frozen)
 
-event_mo_ends, event_mo_starts = make_mo_phase_events(params)
+event_mo_ends, event_mo_starts, event_solid_dries = make_phase_events(params, Mmantle)
 
 scaler = StateScaler(a0=initial_semi_major_axis, Rp=Rp, M_ocean=MH2O)
 
 # Determine which phase we start in
-mf_threshold = params['planet']['convection']['melt_fraction_threshold']
+mf_threshold  = params['planet']['convection']['melt_fraction_threshold']
+dry_threshold = params['planet']['thermodynamics'].get('dry_solid_threshold', 1e-9)
 _, meltfrac_init, _ = get_melt_fractions(Tr0[4], params['_grid'])
-is_mo = bool(meltfrac_init >= mf_threshold)
-print(f"Starting phase: {'Magma Ocean' if is_mo else 'Solid Mantle'} "
-      f"(meltfrac_bulk = {meltfrac_init:.3f})")
+if meltfrac_init >= mf_threshold:
+    phase = 'mo'
+elif Tr0[6] / Mmantle < dry_threshold:
+    phase = 'dry_solid'
+else:
+    phase = 'wet_solid'
+print(f"Starting phase: {phase} (meltfrac_bulk = {meltfrac_init:.3f})")
 
 # =====================================================================
 # --- PHASE-CHAINING INTEGRATION LOOP ---
@@ -246,7 +252,10 @@ print(f"Starting phase: {'Magma Ocean' if is_mo else 'Solid Mantle'} "
 # event flips the phase flag and the loop restarts.  This lets each solver
 # work on a continuous, smooth problem and naturally handles freeze-remelt.
 
+_PHASE_LABELS = {'mo': 'Magma Ocean', 'wet_solid': 'Wet Solid', 'dry_solid': 'Dry Solid'}
+
 MAX_PHASES = 20
+events_encountered = dict()
 t_list     = []
 y_list     = []
 current_y  = Tr0
@@ -256,20 +265,21 @@ run_success = True
 total_years = (end_time_sec - start_time_sec) / constants['seconds_per_year']
 
 for _phase_idx in range(MAX_PHASES):
-    
-    if is_mo:
-        print(f"Working pn phase {_phase_idx}:: Magma Ocean")
-    else:
-        print(f"Working pn phase {_phase_idx}:: Magma Frozen")
+    print(f"Working on phase {_phase_idx}:: {_PHASE_LABELS[phase]}")
 
     if t_current >= end_time_sec:
         break
+    elif t_current != start_time_sec:
+        events_encountered[phase] = t_current / constants['seconds_per_year']
 
-    if is_mo:
+    if phase == 'mo':
         ode_fun      = mo_ode
         phase_events = [event_mo_ends]
-    else:
+    elif phase == 'wet_solid':
         ode_fun      = solid_ode
+        phase_events  = [event_mo_starts, event_solid_dries]
+    else:  # 'dry_solid'
+        ode_fun      = dry_ode
         phase_events = [event_mo_starts]
 
     segment = monitor_ode(
@@ -281,22 +291,27 @@ for _phase_idx in range(MAX_PHASES):
     )
 
     if not segment.success:
-        # solver failure
         print(f"\nIntegration failed at "
-                f"t = {segment.t[-1] / constants['seconds_per_year']:.3e} yr: {seg.message}")
+              f"t = {segment.t[-1] / constants['seconds_per_year']:.3e} yr: {segment.message}")
         run_success = False
         break
 
-    # status == 1: terminal event → flip phase and continue
     t_current = segment.t[-1]
     current_y = segment.y[:, -1]
     t_list.append(segment.t)
     y_list.append(segment.y)
-    if is_mo:
-        print(f"\n Completed Phase {_phase_idx}:: 'Magma Ocean' at t = {t_current / constants['seconds_per_year']:.3e} yr")
-    else:
-        print(f"\n Completed Phase {_phase_idx}:: 'Magma Frozen' at t = {t_current / constants['seconds_per_year']:.3e} yr")
-    is_mo = not is_mo
+
+    prev_phase = phase
+    if phase == 'mo':
+        phase = 'wet_solid'
+    elif phase == 'wet_solid':
+        # t_events[0] = event_mo_starts, t_events[1] = event_solid_dries
+        phase = 'mo' if len(segment.t_events[0]) > 0 else 'dry_solid'
+    else:  # 'dry_solid'
+        phase = 'mo'
+
+    print(f"\n Completed Phase {_phase_idx}:: '{_PHASE_LABELS[prev_phase]}' "
+          f"at t = {t_current / constants['seconds_per_year']:.3e} yr  →  {_PHASE_LABELS[phase]}")
 
 # Concatenate all segments into a single solution-like object
 t_all = np.concatenate(t_list)
@@ -337,11 +352,13 @@ def plot_magma_ocean():
     Q_radiogenic[Q_radiogenic == 0.0] = np.nan
 
     def add_event_lines(axis):
-        return None  #Temp Disable
-        for tc in results['t_crust']:
-            axis.axvline(x=tc, ls=':', c='k')
-        for td in results['t_degas']:
-            axis.axvline(x=td, ls='-.', c='k')
+        phase_ls = {
+            'mo': '--',
+            'wet_solid': ':',
+            'dry_solid': '-.'
+        }
+        for phase_type, phase_time in events_encountered.items():
+            axis.axvline(x=phase_time, ls=phase_ls[phase_type], c='k')
 
     # Temperature Plot
     fig_tmp, ax_tmp = plt.subplots(figsize=(8, 5))

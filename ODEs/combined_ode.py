@@ -49,17 +49,25 @@ def _unpack_header(Tr, Mmantle, Rp, Rc, Mh, Mp):
 
 
 def _b_coeff(Rp, radius_solid, rho_mantle, g, temp_mantle, thermo):
-    """Solidification rate coefficient dRs/dT (m/K)"""
+    """Solidification rate coefficient dRs/dT (m/K).
+
+    Tanh blending across the low-P / high-P solidus branch crossover removes
+    the discontinuity in B (and thus in dT_m_dt) when radius_solid passes
+    through the crossover depth.
+    """
     Cp    = thermo['specific_heat_mantle']
     alpha = thermo['thermal_expansion']
 
-    # TODO: Target for softening??
-    if (Rp - radius_solid) > (405e9 / 77.89 / rho_mantle / g):
-        Tsol_a = thermo['solidus_slope_high_p'] * 1e-9
-        Tsol_b = thermo['solidus_intercept_high_p']
-    else:
-        Tsol_a = thermo['solidus_slope_low_p'] * 1e-9
-        Tsol_b = thermo['solidus_intercept_low_p']
+    D_cross = 405e9 / 77.89 / rho_mantle / g        # crossover depth (m)
+    depth   = Rp - radius_solid
+    w       = thermo.get('solidus_crossover_width_km', 30.0) * 1e3  # half-width (m)
+    blend   = 0.5 * (1.0 + np.tanh((depth - D_cross) / w))          # 0=low-P, 1=high-P
+
+    Tsol_a = ((1.0 - blend) * thermo['solidus_slope_low_p']
+              + blend       * thermo['solidus_slope_high_p']) * 1e-9
+    Tsol_b = ((1.0 - blend) * thermo['solidus_intercept_low_p']
+              + blend       * thermo['solidus_intercept_high_p'])
+
     return (
         (Cp * (Tsol_b * alpha - Tsol_a * rho_mantle * Cp)) /
         (g * (Tsol_a * rho_mantle * Cp - alpha * temp_mantle)**2)
@@ -388,29 +396,167 @@ def moODE_solid(
 
 
 # ===========================================================================
+# DRY SOLID MANTLE ODE
+# Active when melt fraction < threshold AND solid water mass fraction < dry_solid_threshold.
+# ===========================================================================
+def moODE_dry_solid(
+        t_sec, Tr, Rp, Rc, Mmantle, Teq, rho_mantle, g, Ts, Ps, OLR, ASR,
+        t_flux, Lbol, Xi, FeOt, Temp_K, P_Pa, tsat, Mp, LStar, Rh, Mh,
+        tides_on_flag, params):
+    """
+    ODE for the dry solid mantle phase.
+
+    Identical to moODE_solid but without solid-state degassing — the volatile
+    source in the solid is exhausted. radius_solid still evolves so tidal
+    remelting episodes can trigger event_mo_starts. Terminated by
+    event_mo_starts when meltfrac_bulk rises above the threshold.
+    """
+    constants = params['constants']
+    mat       = params['planet']['material']
+    atm       = params['planet']['atmosphere']
+    thermo    = params['planet']['thermodynamics']
+
+    molar_mass_O   = constants['molar_mass_O']
+    molar_mass_H2O = constants['molar_mass_H2O']
+    molar_mass_H   = constants['molar_mass_H']
+
+    heat_capacity_mantle     = thermo['specific_heat_mantle']
+    heat_capacity_water      = thermo['specific_heat_H2O']
+    density_crust            = mat['density_mantle']
+    latent_heat_vaporization = thermo['latent_heat_vaporization']
+    crit_temp_water = atm['critical_temp_H2O']
+    vapor_a         = atm['vapor_press_a']
+    vapor_b         = atm['vapor_press_b']
+
+    surface_area = 4.0 * np.pi * Rp**2
+
+    (semi_a, orbital_freq, eccentricity, spin_freq_h, spin_freq_p,
+     temp_mantle, radius_solid,
+     _, mass_frac_water_solid,
+     mass_water_atm, mass_oxygen_atm, temp_surface) = _unpack_header(
+        Tr, Mmantle, Rp, Rc, Mh, Mp)
+
+    # --- Bulk melt fraction ---
+    _, meltfrac_bulk, _ = get_melt_fractions(temp_mantle, params['_grid'])
+    if temp_mantle <= thermo['solidus_intercept_low_p']:
+        meltfrac_bulk = 0.0
+
+    # --- Solidification rate coefficient (needed for remelting feedback) ---
+    B = _b_coeff(Rp, radius_solid, rho_mantle, g, temp_mantle, thermo)
+
+    # --- Rheology ---
+    solid_shear_modulus = calc_shear_modulus(meltfrac_bulk, params)
+    nu_solid_bulk = viscosity(temp_mantle, temp_surface, rho_mantle,
+                              mass_frac_water_solid, meltfrac_bulk, params)
+
+    # --- Water & Oxygen pressures (vapour equilibrium, no dissolved phase) ---
+    if temp_surface > crit_temp_water:
+        pressure_H2O = mass_water_atm * g / surface_area
+    else:
+        pressure_H2O = 10 ** (vapor_a - vapor_b / temp_surface) * 1e5
+        if (pressure_H2O * surface_area / g) > mass_water_atm:
+            pressure_H2O = mass_water_atm * g / surface_area
+
+    pressure_O2 = mass_oxygen_atm * g / surface_area
+
+    # --- Heat flux (convection over the full solid mantle) ---
+    q_mantle, Db, _, _, _ = mantleheatflux(
+        temp_mantle, temp_surface, Rc, Rp, Rc, g, rho_mantle,
+        mass_frac_water_solid, meltfrac_bulk, params
+    )
+
+    # --- Energy budget ---
+    flux_to_space            = get_flux(temp_surface, Teq, pressure_H2O, pressure_O2, Rp, g, params)
+    flux_loss_H, flux_loss_O = get_loss(t_flux, Lbol, t_sec, pressure_O2, pressure_H2O,
+                                        tsat, semi_a, Mp, Rp, LStar, params)
+    radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
+
+    # --- Tidal dissipation (full planet radius) ---
+    visc_solid = nu_solid_bulk * rho_mantle
+    da_dt, de_dt, dspin_dt_h, dspin_dt_p, _, tidal_heating_p, _, _, _ = (
+        calculate_tidal_dissipation(
+            eccentricity, orbital_freq, spin_freq_p, spin_freq_h, Rp, Rh, Mp, Mh,
+            Rc, visc_solid, solid_shear_modulus, Rp, tides_on_flag, params
+        )
+    )
+
+    # --- Thermal evolution (no latent heat) ---
+    mantle_cooling_watts       = surface_area * q_mantle
+    total_mantle_heating_watts = radiogenic_heating_watts + tidal_heating_p
+
+    dT_m_dt = (-mantle_cooling_watts + total_mantle_heating_watts) / (heat_capacity_mantle * Mmantle)
+
+    # radius_solid still evolves to capture remelting episodes
+    rate_rs = B * dT_m_dt
+    if radius_solid >= Rp and rate_rs > 0.0:
+        rate_rs = 0.0
+    elif radius_solid <= Rc and rate_rs < 0.0:
+        rate_rs = 0.0
+
+    # --- Volatile rates (no degassing) ---
+    total_mass_loss_H           = surface_area * flux_loss_H
+    total_mass_loss_O           = surface_area * flux_loss_O
+    water_loss_to_space         = total_mass_loss_H * (molar_mass_H2O / (2.0 * molar_mass_H))
+    oxygen_generated_from_water = total_mass_loss_H * (molar_mass_O  / (2.0 * molar_mass_H))
+
+    # --- Assemble ODE ---
+    dTr_dt = np.zeros(11, dtype=np.float64)
+    dTr_dt[0] = da_dt
+    dTr_dt[1] = de_dt
+    dTr_dt[2] = dspin_dt_h
+    dTr_dt[3] = dspin_dt_p
+    dTr_dt[4] = dT_m_dt
+    dTr_dt[5] = rate_rs
+    # solid water: source exhausted
+    dTr_dt[6] = 0.0
+    # atm water: escape only
+    dTr_dt[7] = -water_loss_to_space
+    # atm O2
+    dTr_dt[8] = oxygen_generated_from_water - total_mass_loss_O
+    # solid O2: no active sink or source
+    dTr_dt[9] = 0.0
+    dTr_dt[10] = _surface_temp_ode(
+        q_mantle, flux_to_space, Rp, pressure_H2O, g,
+        heat_capacity_water, heat_capacity_mantle, density_crust,
+        Db,
+        latent_heat_vaporization, mass_water_atm,
+        crit_temp_water, vapor_a, vapor_b, temp_surface
+    )
+    return dTr_dt
+
+
+# ===========================================================================
 # PHASE TRANSITION EVENTS
 # ===========================================================================
-def make_mo_phase_events(params):
+def make_phase_events(params, Mmantle):
     """
-    Return a pair of terminal event functions for MO ↔ solid transitions.
+    Return terminal event functions for all three phase transitions.
 
-    event_mo_ends   — attach to moODE_magma_ocean; fires when meltfrac_bulk
-                      drops to the threshold (MO freezing out).
-    event_mo_starts — attach to moODE_solid; fires when meltfrac_bulk rises
-                      to the threshold (remelting episode begins).
+    event_mo_ends     — MO → wet solid; meltfrac_bulk decreasing through threshold.
+    event_mo_starts   — any solid → MO; meltfrac_bulk increasing through threshold.
+    event_solid_dries — wet solid → dry solid; solid water mass fraction
+                        decreasing through dry_solid_threshold.
 
-    Both functions receive *dimensional* (t_sec, y_dim) because
+    All functions receive *dimensional* (t_sec, y_dim) because
     StateScaler.wrap_event unscales before calling.
     """
     mf_threshold      = params['planet']['convection']['melt_fraction_threshold']
+    mf_width          = params['planet']['convection']['phase_transition_width']
     solidus_low_p_int = params['planet']['thermodynamics']['solidus_intercept_low_p']
+    dry_threshold     = params['planet']['thermodynamics'].get('dry_solid_threshold', 1e-9)
+
+    # Asymmetric thresholds prevent chattering at the phase boundary.
+    # The MO→solid and solid→MO crossings are separated by 2*mf_width so
+    # neither event can fire at the exact state left by the other.
+    mo_end_threshold   = mf_threshold - mf_width   # MO ends below this
+    mo_start_threshold = mf_threshold + mf_width   # MO restarts above this
 
     def event_mo_ends(t_sec, y_dim):
         temp_mantle = max(y_dim[4], y_dim[10] + 1.0)
         _, meltfrac_bulk, _ = get_melt_fractions(temp_mantle, params['_grid'])
         if temp_mantle <= solidus_low_p_int:
             meltfrac_bulk = 0.0
-        return meltfrac_bulk - mf_threshold
+        return meltfrac_bulk - mo_end_threshold
 
     event_mo_ends.terminal  = True
     event_mo_ends.direction = -1   # fires only when meltfrac is decreasing
@@ -420,9 +566,16 @@ def make_mo_phase_events(params):
         _, meltfrac_bulk, _ = get_melt_fractions(temp_mantle, params['_grid'])
         if temp_mantle <= solidus_low_p_int:
             meltfrac_bulk = 0.0
-        return meltfrac_bulk - mf_threshold
+        return meltfrac_bulk - mo_start_threshold
 
     event_mo_starts.terminal  = True
     event_mo_starts.direction = +1  # fires only when meltfrac is increasing
 
-    return event_mo_ends, event_mo_starts
+    def event_solid_dries(_, y_dim):
+        mass_water_solid = max(0.0, y_dim[6])
+        return mass_water_solid / Mmantle - dry_threshold
+
+    event_solid_dries.terminal  = True
+    event_solid_dries.direction = -1  # fires only when solid water is decreasing
+
+    return event_mo_ends, event_mo_starts, event_solid_dries
