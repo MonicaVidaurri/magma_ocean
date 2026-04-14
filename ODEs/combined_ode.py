@@ -74,6 +74,28 @@ def _b_coeff(Rp, radius_solid, rho_mantle, g, temp_mantle, thermo):
     )
 
 
+def _calc_pressure_H2O_smooth(temp_surface, mass_water_atm, g, surface_area,
+                               crit_temp_water, vapor_a, vapor_b):
+    """
+    Atmospheric water vapor pressure with a smooth transition near the critical
+    temperature (647 K), replacing the hard if/else that caused a discontinuous
+    spike in surface temperature.
+
+    Above crit_temp_water: all water is supercritical vapor → p = p_full.
+    Below crit_temp_water: vapor/liquid equilibrium → p = min(p_sat, p_full).
+    Near crit_temp_water: smooth tanh blend between the two regimes.
+
+    The blend width of 20 K is tight enough to be physically accurate but wide
+    enough to eliminate the numerical discontinuity.
+    """
+    p_full = mass_water_atm * g / surface_area
+    p_sat  = 10.0 ** (vapor_a - vapor_b / temp_surface) * 1e5
+    p_below_crit = min(p_sat, p_full)
+
+    blend = 0.5 * (1.0 + np.tanh((temp_surface - crit_temp_water) / 20.0))
+    return blend * p_full + (1.0 - blend) * p_below_crit
+
+
 def _surface_temp_ode(q_mantle, flux_to_space, Rp, pressure_H2O, g,
                       heat_capacity_water, heat_capacity_mantle, density_crust,
                       crust_depth_phys, latent_heat_vaporization,
@@ -83,6 +105,9 @@ def _surface_temp_ode(q_mantle, flux_to_space, Rp, pressure_H2O, g,
     surface_area = 4.0 * np.pi * Rp**2
     net_surface_power = surface_area * (q_mantle - flux_to_space)
 
+    # Latent heat of condensation/vaporization slows the surface temperature
+    # evolution near the dew point.  T_sat is found from the Antoine equation
+    # inverted at the actual atmospheric column pressure, capped at crit_temp_water.
     latent_heat_capacity = 0.0
     if mass_water_atm > 0:
         P_actual = mass_water_atm * g / surface_area
@@ -95,9 +120,6 @@ def _surface_temp_ode(q_mantle, flux_to_space, Rp, pressure_H2O, g,
             dP_sat_dT = P_sat * np.log(10) * vapor_b / (temp_surface**2)
             latent_heat_capacity = (latent_heat_vaporization
                                     * (surface_area / g) * dP_sat_dT * activation)
-    
-    # TODO: Turn off for now.
-    latent_heat_capacity = 0.0
 
     heat_cap_atm   = heat_capacity_water * (pressure_H2O * surface_area / g)
     heat_cap_crust = (heat_capacity_mantle * density_crust
@@ -206,11 +228,20 @@ def moODE_magma_ocean(
     )
 
     # --- Thermal evolution ---
-    mantle_cooling_watts       = surface_area * q_mantle
-    total_mantle_heating_watts = radiogenic_heating_watts + tidal_heating_p
+    mantle_cooling_watts = surface_area * q_mantle
 
-    # Latent heat reduces effective thermal inertia during solidification
-    thermal_inertia = ((heat_capacity_mantle * Mmantle)
+    # Fix B: tidal heating dissipates in the solid layer only — it is NOT added to the
+    # liquid layer's thermal budget.  tidal_heating_p is still used above for da/dt, de/dt.
+    #
+    # Fix C: credit only the liquid layer's proportional share of radiogenic heating.
+    # The solid layer beneath radius_solid retains its own share; as the MO shrinks,
+    # the liquid layer heats only from radioactive elements in the melt.
+    frac_molten = mass_magma_ocean / Mmantle
+    total_mantle_heating_watts = radiogenic_heating_watts * frac_molten
+
+    # Latent heat reduces effective thermal inertia during solidification.
+    # Only the convecting magma ocean mass participates — not the already-solid interior.
+    thermal_inertia = ((heat_capacity_mantle * mass_magma_ocean)
                        - (4.0 * np.pi * rho_mantle * latent_heat_fusion * radius_solid**2) * B)
 
     dT_m_dt = (-mantle_cooling_watts + total_mantle_heating_watts) / thermal_inertia
@@ -316,12 +347,9 @@ def moODE_solid(
                               Tr[6] / Mmantle, meltfrac_bulk, params)
 
     # --- Water & Oxygen pressures (vapour equilibrium) ---
-    if temp_surface > crit_temp_water:
-        pressure_H2O = mass_water_atm * g / surface_area
-    else:
-        pressure_H2O = 10 ** (vapor_a - vapor_b / temp_surface) * 1e5
-        if (pressure_H2O * surface_area / g) > mass_water_atm:
-            pressure_H2O = mass_water_atm * g / surface_area
+    pressure_H2O = _calc_pressure_H2O_smooth(
+        temp_surface, mass_water_atm, g, surface_area,
+        crit_temp_water, vapor_a, vapor_b)
 
     pressure_O2 = mass_oxygen_atm * g / surface_area
 
@@ -459,12 +487,9 @@ def moODE_dry_solid(
                               mass_frac_water_solid, meltfrac_bulk, params)
 
     # --- Water & Oxygen pressures (vapour equilibrium, no dissolved phase) ---
-    if temp_surface > crit_temp_water:
-        pressure_H2O = mass_water_atm * g / surface_area
-    else:
-        pressure_H2O = 10 ** (vapor_a - vapor_b / temp_surface) * 1e5
-        if (pressure_H2O * surface_area / g) > mass_water_atm:
-            pressure_H2O = mass_water_atm * g / surface_area
+    pressure_H2O = _calc_pressure_H2O_smooth(
+        temp_surface, mass_water_atm, g, surface_area,
+        crit_temp_water, vapor_a, vapor_b)
 
     pressure_O2 = mass_oxygen_atm * g / surface_area
 

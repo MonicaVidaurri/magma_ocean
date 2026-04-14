@@ -39,7 +39,7 @@ from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 with open("baseline_config.toml", "rb") as f:
     params = tomllib.load(f)
 
-simulation_config = 'trappist1e'
+simulation_config = 'erf'
 with open(f'{simulation_config}.toml', "rb") as f:
     specific_params = tomllib.load(f)
 

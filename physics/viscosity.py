@@ -70,8 +70,9 @@ def viscosity(
     visc_liquid_regime = dynamic_visc_liquid / (1.0 - safe_relative_effect)**2.5
 
     # Smooth Logarithmic Blending
-    # Centers the transition at mf = 0.4 with a smooth width of 2% melt fraction
-    transition_width = 0.02
+    # Centers the transition at the critical crystal fraction.
+    # Width is read from config (melt_transition_width); wider = smoother viscosity cliff.
+    transition_width = rheo['melt_transition_width']
     blend = 0.5 * (1.0 + np.tanh((melt_fraction - (1.0 - critical_crystal_fraction)) / transition_width))
     
     # Smoothly interpolate across the orders of magnitude
