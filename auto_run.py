@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import glob
 import numpy as np
 from scipy.interpolate import griddata
-from scipy.spatial import ConvexHull
+chunk_size = 50000
 
 toml_name = 'proximab.toml'
 fix_name = 'proximab_fix.toml'
@@ -13,7 +13,6 @@ dirname = 'autotides_proxb_highXUV'
 rootdir = '/Users/mvidaurr/Desktop/PycharmProjects/MO_tides/'
 xuv_model = 1
 
-# start_time = time.time()
 ecc_range = np.linspace(0.02, 0.6, num=20)
 spin_range = np.linspace(start=-100,stop=100,num=20)
 time_range = [1e3, 1e5, 5e5, 1e6, 1e8, 5e8, 1e9]
@@ -193,171 +192,5 @@ def autorun():
                     shutil.move(filet, destt)
                 print('---------------------------- done! ---------------------------\n\n\n')
 
-##--------------------- create dirs + run each case and save results ------------------------
+#--------------------- create dirs + run each case and save results ------------------------
 # autorun()
-
-##---------------------------------- make contour plots -------------------------------------
-###may want to use rescale=True at the end of griddata for earth
-results_path = glob.glob('results/'+dirname+'/*/*/*')
-paths = []
-ecc_vals = []
-spin_vals = []
-for t in time_range:
-    new_time = '{:.0e}'.format(t)
-    for e in ecc_range:
-        new_ecc = '{:.3}'.format(e)
-        ecc_vals.append(new_ecc)
-        for s in spin_range:
-            new_spin = '{:.3}'.format(s)
-            spin_vals.append(new_spin)
-            srchstring = 'output'
-            for path in results_path:
-                pathstr = 'results/'+dirname+'/t=' + new_time + '/ecc=' + new_ecc + '/spin=' + new_spin
-                use_paths = glob.glob(pathstr+'/*')
-            for file in use_paths:
-                if srchstring in file:
-                    paths.append(file)
-
-def time0():
-    fig, ax = plt.subplots()
-    time0 = '1e+03'
-    for file in paths:
-        if time0 in file:
-                df1 = pd.read_csv(file)
-                # print(file)
-                df = pd.DataFrame({'ecc': df1['eccentricity'], 'spin': df1['spin_ratio_planet'], 'PO2': df1['PO2']})
-                df.dropna(axis=0, how='all', inplace=True)
-
-                x = np.linspace(df['ecc'].min(), df['ecc'].max(), len(df['ecc'].unique()))
-                y = np.linspace(df['spin'].min(), df['spin'].max(), len(df['spin'].unique()))
-                z = griddata((df['ecc'], df['spin']), df['PO2'], (x[None, :], y[:, None]), method='nearest')
-                plt.contourf(x, y, z)
-    plt.colorbar(label='PO$_2$')
-    plt.title(time0)
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.show()
-
-def time1():
-    fig, ax = plt.subplots()
-    time1 = '1e+05'
-    for file in paths:
-        # print(file)
-        if time1 in file:
-            # print(file)
-            df1 = pd.read_csv(file,sep=',',skipinitialspace=True)
-            df = pd.DataFrame({'ecc': df1['eccentricity'], 'spin': df1['spin_ratio_planet'], 'PO2': df1['PO2']})
-            # df.dropna(axis=0, how='all', inplace=True)
-            #
-            # x = np.linspace(df['ecc'].min(), df['ecc'].max(), len(df['ecc'].unique()))
-            # y = np.linspace(df['spin'].min(), df['spin'].max(), len(df['spin'].unique()))
-            plt.tricontourf(df['ecc'], df['spin'], df['PO2'])
-    plt.colorbar(label='PO$_2$')
-    plt.title(time1)
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.show()
-
-def time2():
-    fig, ax = plt.subplots()
-    time2 = '1e+06'
-    for file in paths:
-        if time2 in file:
-            df1 = pd.read_csv(file)
-            # #print(file)
-    #         df = pd.DataFrame({'ecc': df1['eccentricity'], 'spin': df1['spin_ratio_planet'], 'PO2': df1['PO2']})
-    #         df.dropna(axis=0, how='all', inplace=True)
-    #
-    #         x = np.linspace(df['ecc'].min(), df['ecc'].max(), len(df['ecc'].unique()))
-    #         y = np.linspace(df['spin'].min(), df['spin'].max(), len(df['spin'].unique()))
-    #         z = griddata((df['ecc'], df['spin']), df['PO2'], (x[None, :], y[:, None]), method='linear')
-    #         plt.contourf(x, y, z)
-    # plt.colorbar(label='PO$_2$')
-    # plt.title(time2)
-    # plt.xlabel('Eccentricity')
-    # plt.ylabel('Spin')
-    # plt.show()
-
-def time3():
-    fig, ax = plt.subplots()
-    time3 = '1e+08'
-    for file in paths:
-        if time3 in file:
-            df1 = pd.read_csv(file)
-            df = pd.DataFrame({'ecc': df1['eccentricity'], 'spin': df1['spin_ratio_planet'], 'PO2': df1['PO2']})
-            df.dropna(axis=0, how='all', inplace=True)
-
-            x = np.linspace(df['ecc'].min(), df['ecc'].max(), len(df['ecc'].unique()))
-            y = np.linspace(df['spin'].min(), df['spin'].max(), len(df['spin'].unique()))
-            z = griddata((df['ecc'], df['spin']), df['PO2'], (x[None, :], y[:, None]), method='linear')
-            plt.contourf(x, y, z)
-    plt.colorbar(label='PO$_2$')
-    plt.title(time3)
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.show()
-
-def time4():
-    fig, ax = plt.subplots()
-    time4 = '1e+09'
-    for file in paths:
-        if time4 in file:
-            df1 = pd.read_csv(file)
-            df = pd.DataFrame({'ecc': df1['eccentricity'], 'spin': df1['spin_ratio_planet'], 'PO2': df1['PO2']})
-            df.dropna(axis=0, how='all', inplace=True)
-
-            x = np.linspace(df['ecc'].min(), df['ecc'].max(), len(df['ecc'].unique()))
-            y = np.linspace(df['spin'].min(), df['spin'].max(), len(df['spin'].unique()))
-            z = griddata((df['ecc'], df['spin']), df['PO2'], (x[None, :], y[:, None]), method='linear')
-            plt.contourf(x, y, z)
-    plt.colorbar(label='PO$_2$')
-    plt.title(time4)
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.show()
-
-def time5():
-    fig, ax = plt.subplots()
-    time5 = '5e+05'
-    for file in paths:
-        if time5 in file:
-            df1 = pd.read_csv(file)
-            df = pd.DataFrame({'ecc': df1['eccentricity'], 'spin': df1['spin_ratio_planet'], 'PO2': df1['PO2']})
-            df.dropna(axis=0, how='all', inplace=True)
-
-            x = np.linspace(df['ecc'].min(), df['ecc'].max(), len(df['ecc'].unique()))
-            y = np.linspace(df['spin'].min(), df['spin'].max(), len(df['spin'].unique()))
-            z = griddata((df['ecc'], df['spin']), df['PO2'], (x[None, :], y[:, None]), method='linear')
-            plt.contourf(x, y, z)
-    plt.colorbar(label='PO$_2$')
-    plt.title(time5)
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.show()
-
-def time6():
-    fig, ax = plt.subplots()
-    time6 = '5e+08'
-    for file in paths:
-        if time6 in file:
-            df1 = pd.read_csv(file)
-            df = pd.DataFrame({'ecc': df1['eccentricity'], 'spin': df1['spin_ratio_planet'], 'PO2': df1['PO2']})
-            df.dropna(axis=0, how='all', inplace=True)
-
-            x = np.linspace(df['ecc'].min(), df['ecc'].max(), len(df['ecc'].unique()))
-            y = np.linspace(df['spin'].min(), df['spin'].max(), len(df['spin'].unique()))
-            z = griddata((df['ecc'], df['spin']), df['PO2'], (x[None, :], y[:, None]), method='linear')
-            plt.contourf(x, y, z)
-    plt.colorbar(label='PO$_2$')
-    plt.title(time6)
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.show()
-
-# time0()
-time1()
-# time2()
-# time3()
-# time4()
-# time5()
-# time6()
