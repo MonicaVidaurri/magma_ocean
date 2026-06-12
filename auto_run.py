@@ -1,30 +1,30 @@
 import os
 import shutil
-import pandas as pd
-import matplotlib.pyplot as plt
 import glob
 import numpy as np
-from scipy.interpolate import griddata
-chunk_size = 50000
 
-toml_name = 'proximab.toml'
-fix_name = 'proximab_fix.toml'
-dirname = 'autotides_proxb_highXUV'
-rootdir = '/Users/mvidaurr/Desktop/PycharmProjects/MO_tides/'
+toml_name = 'erf.toml'
+fix_name = 'erf_fix'
+dirname = 'autotides_erf_highXUV'
+rootdir = '/Users/mvidaurr/Desktop/PycharmProjects/magma_ocean'
 xuv_model = 1
 
-ecc_range = np.linspace(0.02, 0.6, num=20)
-spin_range = np.linspace(start=-100,stop=100,num=20)
-time_range = [1e3, 1e5, 5e5, 1e6, 1e8, 5e8, 1e9]
+# ecc_range = np.linspace(0.02, 0.6, num=20)
+# spin_range = np.linspace(start=-100,stop=100,num=10)
+# time_range = [1e3, 1e5, 5e5, 1e6, 1e8, 5e8, 1e9]
 
-def edit_toml(tomlfile='erf.toml'):
+ecc_range = np.linspace(0.02, 0.6, num=5)
+spin_range = np.linspace(start=-100,stop=100,num=15)
+time_range = [1e5, 1e6, 1e7, 1e8, 1e9]
+
+def edit_toml(tomlfile):
     with open('run_model.py', 'r+') as f:
         str = f.readlines()
-    str[44] = 'simulation_config = \'' + (tomlfile) + '\'\n'
+    str[41] = 'simulation_config = \'' + (tomlfile) + '\'\n'
     with open('run_model.py', 'w') as f:
         f.writelines(str)
 
-def edit_xuv(xuv=1):
+def edit_xuv(xuv):
     xuv_toml = toml_name
     trash_xuv = fix_name
     content = []
@@ -46,7 +46,7 @@ def edit_xuv(xuv=1):
     shutil.copyfile(trash_xuv, xuv_toml)
     os.remove(trash_xuv)
 
-def edit_eccentricity(ecc=0.1):
+def edit_eccentricity(ecc):
     ecc_toml = toml_name
     trash_ecc = fix_name
     content = []
@@ -68,7 +68,7 @@ def edit_eccentricity(ecc=0.1):
     shutil.copyfile(trash_ecc,ecc_toml)
     os.remove(trash_ecc)
 
-def edit_spin(spin=0.0167):
+def edit_spin(spin):
     spin_toml = toml_name
     trash_spin = fix_name
     content = []
@@ -90,7 +90,7 @@ def edit_spin(spin=0.0167):
     shutil.copyfile(trash_spin,spin_toml)
     os.remove(trash_spin)
 
-def edit_time(time=1e9):
+def edit_time(time):
     time_toml = toml_name
     trash_time = fix_name
     content = []
@@ -112,10 +112,10 @@ def edit_time(time=1e9):
     shutil.copyfile(trash_time,time_toml)
     os.remove(trash_time)
 
-def edit_output(output='output.txt'):
+def edit_output(output):
     with open('run_model.py', 'r+') as f:
         str = f.readlines()
-    str[408] = '    ' + (output) + '\n'
+    str[401] = '    ' + (output)
     with open('run_model.py', 'w') as f:
         f.writelines(str)
 
@@ -193,4 +193,4 @@ def autorun():
                 print('---------------------------- done! ---------------------------\n\n\n')
 
 #--------------------- create dirs + run each case and save results ------------------------
-# autorun()
+autorun()
