@@ -39,8 +39,8 @@ from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
 with open("baseline_config.toml", "rb") as f:
     params = tomllib.load(f)
 
-simulation_config = 'erf'
-with open(f'{simulation_config}.toml', "rb") as f:
+simulation_config = 'proximab.toml'
+with open(simulation_config, "rb") as f:
     specific_params = tomllib.load(f)
 
 params = merge_dicts(specific_params, params)
@@ -93,7 +93,7 @@ MStar = star_params['mass_star_relative'] * constants['mass_sun']
 LStar = star_params['lum_star_relative'] * constants['lum_sun']
 host_radius = star_params['host_radius']
 tsat_sec    = star_params['xuv']['tsat_years'] * constants['seconds_per_year']
-stellar = pd.read_csv('data/solardata.txt', sep='\t')
+stellar = pd.read_csv('data/stellar_dataProxCen.txt', sep='	')
 olr_data = np.load('data/OLRdatab.npz')
 Temp_K, P_Pa, OLR = olr_data['Temp_K'], olr_data['P_Pa'], olr_data['OLR']
 Ts, Ps = np.meshgrid(Temp_K, P_Pa)
@@ -399,7 +399,7 @@ if SAVE_DATA:
         'Q_rad': results['Q_rad'],
         'meltfrac': results['meltfrac'] * 100
     })
-    df_results.to_csv(f'{save_name}_results.txt', sep=',', index=False)
+    df_results.to_csv(f'{save_name}_output_tm1e+09_ec0.2_sp10.0.txt', sep=',',index=False)
 
 def plot_magma_ocean():
     Q_tidal = results['Q_tid']
@@ -533,6 +533,6 @@ def plot_magma_ocean():
     add_event_lines(ax_susp) 
     fig_susp.savefig(f"{save_name}_tidal_suscept.png")
 
-    plt.show()
+    # plt.show()
 
 plot_magma_ocean()

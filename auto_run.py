@@ -3,19 +3,20 @@ import shutil
 import glob
 import numpy as np
 
-toml_name = 'erf.toml'
-fix_name = 'erf_fix'
-dirname = 'autotides_erf_highXUV'
-rootdir = '/Users/mvidaurr/Desktop/PycharmProjects/magma_ocean'
+toml_name = 'proximab.toml'
+fix_name = 'proximab_fix.toml'
 xuv_model = 1
+tides_onoff = 'true'
+dirname = 'autotides_proxb_highXUV_tideson'
+stellar_file = 'data/stellar_dataProxCen.txt' #path to your stellar data file
+rootdir = '/Users/mvidaurr/Desktop/PycharmProjects/magma_ocean' #path to the roodir of this model
 
-# ecc_range = np.linspace(0.02, 0.6, num=20)
-# spin_range = np.linspace(start=-100,stop=100,num=10)
-# time_range = [1e3, 1e5, 5e5, 1e6, 1e8, 5e8, 1e9]
-
-ecc_range = np.linspace(0.02, 0.6, num=5)
-spin_range = np.linspace(start=-100,stop=100,num=15)
+# ecc_range = np.linspace(0.02, 0.6, num=5)
+# spin_range = np.linspace(start=-100,stop=100,num=15)
 time_range = [1e5, 1e6, 1e7, 1e8, 1e9]
+
+ecc_range = np.linspace(0.0001, 0.2, 20)
+spin_range = np.arange(-10,11,dtype=np.float64)
 
 def edit_toml(tomlfile):
     with open('run_model.py', 'r+') as f:
@@ -23,6 +24,35 @@ def edit_toml(tomlfile):
     str[41] = 'simulation_config = \'' + (tomlfile) + '\'\n'
     with open('run_model.py', 'w') as f:
         f.writelines(str)
+
+def edit_stellarfile(stellarfile):
+    with open('run_model.py', 'r+') as f:
+        str = f.readlines()
+    str[95] = 'stellar = pd.read_csv(\'' + stellarfile + '\', sep=\'\t\')' + '\n'
+    with open('run_model.py', 'w') as f:
+        f.writelines(str)
+
+def edit_tides(tides):
+    tides_toml = toml_name
+    trash_tides = fix_name
+    content = []
+    with open(toml_name,'r') as f:
+        for line in f:
+            content.append(line)
+
+    new = []
+    for c in content:
+        if c.startswith('tides_on'):
+            new_spin_string = 'tides_on = ' + (tides)+'\n'
+            new.append(new_spin_string)
+        else:
+            new.append(c)
+
+    with open(fix_name,'w') as f:
+        for c in new:
+            f.write(c)
+    shutil.copyfile(trash_tides,tides_toml)
+    os.remove(trash_tides)
 
 def edit_xuv(xuv):
     xuv_toml = toml_name
@@ -121,9 +151,9 @@ def edit_output(output):
 
 def create_dir():
     for t in time_range:
-        os.makedirs('results/'+dirname+'/t={:.0e}'.format(t), exist_ok=True)
+        os.makedirs('results/low_values/'+dirname+'/t={:.0e}'.format(t), exist_ok=True)
         edit_time(t)
-    path = glob.glob('results/'+dirname+'/*')
+    path = glob.glob('results/low_values/'+dirname+'/*')
     t_paths = []
     for p in path:
         t_paths.append(p)
@@ -134,7 +164,7 @@ def create_dir():
         for ecc in ecc_range:
             os.makedirs(name.format(ecc), exist_ok=True)
             edit_eccentricity(ecc)
-    path2 = glob.glob('results/'+dirname+'/*/*')
+    path2 = glob.glob('results/low_values/'+dirname+'/*/*')
     s_paths = []
     for p in path2:
         s_paths.append(p)
@@ -150,6 +180,8 @@ def autorun():
     create_dir()
     edit_toml(toml_name)
     edit_xuv(xuv_model)
+    edit_stellarfile(stellar_file)
+    edit_tides(tides_onoff)
     for time in time_range:
         edit_time(time)
         print('Time = ' + '{:.0e}'.format(time))
@@ -162,9 +194,9 @@ def autorun():
                 edit_output('df_results.to_csv(f\'{save_name}_output_tm' + '{:.0e}'.format(time) +
                             '_ec' + '{:.3}'.format(ecc)
                             + '_sp' + '{:.3}'.format(spin) + '.txt' +
-                            '\'' + ',' + ' sep=\',\',index=False)\n')
+                            '\'' + ',' + ' sep=\'\t\',index=False)\n')
                 os.system('python3 run_model.py')
-                main_files = glob.glob('results/'+dirname+'/*/*/*')
+                main_files = glob.glob('results/low_values/'+dirname+'/*/*/*')
 
                 dest_png = []
                 dest_txt = []
@@ -172,7 +204,7 @@ def autorun():
                     time_to_str = '{:.0e}'.format(time)
                     ecc_to_str = '{:.3}'.format(ecc)
                     spin_to_str = '{:.3}'.format(spin)
-                    newpath = 'results/'+dirname+'/t=' + time_to_str + '/ecc=' + ecc_to_str + '/spin=' + spin_to_str
+                    newpath = 'results/low_values/'+dirname+'/t=' + time_to_str + '/ecc=' + ecc_to_str + '/spin=' + spin_to_str
                     dest_png.append(newpath)
                     dest_txt.append(newpath)
 
