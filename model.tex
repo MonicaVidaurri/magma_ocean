@@ -1,0 +1,434 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[round,authoryear]{natbib}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\Tp}{T_\mathrm{p}}
+\newcommand{\Ts}{T_\mathrm{s}}
+\newcommand{\Teq}{T_\mathrm{eq}}
+\newcommand{\dd}{\mathrm{d}}
+
+\title{Coupled Thermal, Volatile, and Tidal-Orbital Evolution of Magma Ocean Planets:\\
+Technical Description of the \texttt{magma\_ocean} Model}
+\author{Technical report}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We describe the physics of \texttt{magma\_ocean}, a model of the thermal and volatile evolution of a rocky planet that begins fully or largely molten. The model descends from GOOEY \citep{Schaefer2016}, which tracks the partitioning of water and oxygen between a crystallizing magma ocean, the solid mantle, and a steam atmosphere undergoing hydrodynamic escape. We extend it with dual-body tidal dissipation and the resulting orbital and rotational evolution, and we recast the interior as a single continuous model in which every quantity follows from the mantle potential temperature through the melt distribution of an adiabatic mantle. This removes the phase switching (magma ocean, wet solid, dry solid) of earlier versions and makes the energy budget, including tidal heating, conservative. The motivating question is whether a hot planet on an eccentric orbit, which dissipates little tidal energy while molten but becomes strongly dissipative as it crosses the rheological transition, is kept partially molten by tides long enough to change the amount and timing of its outgassing. The planet's tidal response is computed for a self-compressed interior with a full radial solution, in which the liquid magma layer loads the solid beneath it and weakens its dissipation several-fold. For a TRAPPIST-1e analog we find a threshold near an initial eccentricity of 0.1, above which tidal heating holds the mantle near the rheological transition and extends its partially molten stage by one to two orders of magnitude, to 50--180~Myr. Even smaller eccentricities delay the release of water stored in the solid mantle, by factors of 8 to 27, while the total water loss, set by energy-limited escape, is unchanged.
+\end{abstract}
+
+% ======================================================================================================================
+\section{Introduction}
+% ======================================================================================================================
+
+Rocky planets likely pass through one or more magma ocean stages during and after accretion. While the surface is molten, water and other volatiles partition between the melt and an overlying atmosphere, iron in the melt buffers the oxygen budget, and a thick steam atmosphere slows cooling \citep{Hamano2013,Lebrun2013,Schaefer2016}. Around M dwarfs, long pre-main-sequence phases and strong XUV emission can strip that atmosphere while the interior is still molten, which makes the relative timing of solidification and escape a first-order control on what the planet retains.
+
+Many of the rocky planets now observable orbit close to their host stars, where tides can be a major heat source. Tidal dissipation depends strongly on rheology: a liquid has no rigidity and dissipates little of the tidal forcing, while a partially molten solid near its rheological transition can dissipate very efficiently \citep{Moore2003, Henning2009,Renaud2021}. A planet that starts molten on an eccentric orbit may therefore cool with little tidal heating at first and then encounter a strong heat source as it crystallizes. This report documents the model we use to test whether that feedback changes the lifetime of the magma ocean and the amount and timing of outgassing.
+
+Section~\ref{sec:overview} lists the state variables and main assumptions. Sections~\ref{sec:interior} to \ref{sec:tides} describe the interior, energy balance, surface and atmosphere, volatiles, escape, and tides. Section~\ref{sec:numerics} covers the numerical approach, Section~\ref{sec:example} shows an example, and Section~\ref{sec:limitations} collects the main limitations.
+
+% ======================================================================================================================
+\section{Model Overview}\label{sec:overview}
+% ======================================================================================================================
+
+The planet has an iron core of radius $R_c$ and a silicate mantle of uniform density $\rho$ between $R_c$ and the surface radius $R$. It orbits a star of mass $M_h$ and radius $R_h$. The model integrates the nine state variables of Table~\ref{tab:state}. Everything else (surface temperature, melt distribution, pressures, heating rates) is a diagnostic function of the state and time.
+
+\begin{table}[h]
+\centering
+\caption{State variables.}\label{tab:state}
+\begin{tabular}{lll}
+\toprule
+Symbol & Description & Unit \\
+\midrule
+$a$ & Semi-major axis & m \\
+$e$ & Orbital eccentricity & -- \\
+$\Omega_h$ & Spin rate of the star & rad s$^{-1}$ \\
+$\Omega_p$ & Spin rate of the planet & rad s$^{-1}$ \\
+$\Tp$ & Mantle potential temperature & K \\
+$W_s$ & Water in the solid mantle below the melt region & kg \\
+$W_f$ & Water in the melt region, atmosphere, and surface ocean & kg \\
+$O_f$ & Excess oxygen in the melt region (as FeO$_{1.5}$) and atmosphere (as O$_2$) & kg \\
+$O_s$ & Excess oxygen locked in FeO$_{1.5}$ of the solid mantle & kg \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The main assumptions are:
+\begin{enumerate}
+\item The whole mantle follows one adiabat set by $\Tp$, and it is vigorously mixed, so the entire mantle heats and cools together.
+\item Density and gravity are uniform in the mantle, and pressure is hydrostatic.
+\item All melt communicates with the atmosphere, either directly when the surface is molten or through volcanism when melt lies beneath a thin lid. This is an upper bound on volatile exchange.
+\item The atmosphere and surface have negligible heat capacity compared with the mantle, so the surface temperature adjusts instantaneously to balance the interior heat flow against the outgoing radiation.
+\item Only water and oxygen are tracked. Hydrogen escapes after photolysis of water; oxygen escapes only when dragged by hydrogen.
+\item Tidal dissipation occurs in the solid-like part of the mantle and in the star. The liquid magma layer and the core do not dissipate.
+\end{enumerate}
+
+% ======================================================================================================================
+\section{Interior Structure and Melting}\label{sec:interior}
+% ======================================================================================================================
+
+\subsection{Pressure, Adiabat, and Melting Curves}
+
+At depth $z$ below the surface the pressure is $P = \rho g z$, with $g = G M_p / R^2$ the surface gravity. The mantle temperature follows a linearized adiabat,
+\begin{equation}
+T(z) = \Tp \left( 1 + \frac{\alpha g z}{c_p} \right) \equiv \Tp f(z),
+\label{eq:adiabat}
+\end{equation}
+where $\alpha$ is the thermal expansivity and $c_p$ the specific heat. The solidus is built from two linear branches in pressure, $T_{\mathrm{sol},1} = s_1 P + b_1$ at low pressure and $T_{\mathrm{sol},2} = s_2 P + b_2$ at high pressure, following \citet{Schaefer2016}. Instead of taking the minimum of the two, we blend them across their crossover depth $z_\times$ with a hyperbolic tangent of half-width $w_\times$ (30~km by default),
+\begin{equation}
+T_\mathrm{sol}(z) = (1 - \beta) T_{\mathrm{sol},1} + \beta T_{\mathrm{sol},2}, \qquad
+\beta = \tfrac{1}{2}\left[1 + \tanh\left(\frac{z - z_\times}{w_\times}\right)\right],
+\end{equation}
+so that the depth at which the adiabat meets the solidus, and every rate that depends on how that depth moves, is smooth in $\Tp$. The liquidus lies a constant $\Delta T_\mathrm{liq}$ above the solidus.
+
+\subsection{Melt Distribution}
+
+The local melt fraction varies linearly between solidus and liquidus,
+\begin{equation}
+\phi(z) = \min\left[1, \max\left(0, \frac{\Tp f(z) - T_\mathrm{sol}(z)}{\Delta T_\mathrm{liq}}\right)\right].
+\end{equation}
+The adiabat is shallower than the solidus for $\Tp$ below a few thousand kelvin (about 4500~K for the default parameters), so $\phi$ decreases monotonically with depth. We define three depths from this profile: the liquidus crossing $z_\mathrm{liq}$ above which the mantle is fully molten; the solidus crossing $z_s$, the base of the melt-bearing region at radius $r_s = R - z_s$; and the rheological crossing $z_c$ where $\phi = \phi_c$. Here $\phi_c = 1 - \chi_c$, where $\chi_c$ is the critical crystal fraction at which a crystal framework forms (0.6 by default, so $\phi_c = 0.4$). The region above $r_c = R - z_c$ behaves as a liquid, which we call the liquid layer, and the region between $R_c$ and $r_c$ behaves as a solid, which we call the solid-like layer.
+
+The mass of melt in the mantle is
+\begin{equation}
+M_\mathrm{melt} = 4 \pi \rho \left[ \int_0^{z_\mathrm{liq}} r^2 \, \dd z
++ \int_{z_\mathrm{liq}}^{z_s} \frac{\Tp f - T_\mathrm{sol}}{\Delta T_\mathrm{liq}} \, r^2 \, \dd z \right],
+\end{equation}
+and because $\phi$ is linear in $\Tp$ between the crossings, its temperature derivative is
+\begin{equation}
+\frac{\dd M_\mathrm{melt}}{\dd \Tp} = \frac{4 \pi \rho}{\Delta T_\mathrm{liq}} \int_{z_\mathrm{liq}}^{z_s} f(z) \, r^2
+\, \dd z.
+\label{eq:dmelt}
+\end{equation}
+The boundary terms vanish because the integrand is continuous at both crossings. From these we form the bulk melt fraction $\bar{\phi} = M_\mathrm{melt} / M_\mathrm{mantle}$, the mass of the melt-bearing region $M_\mathrm{mr} = \frac{4}{3}\pi \rho (R^3 - r_s^3)$, the crystal mass within it $M_\mathrm{mr} - M_\mathrm{melt}$, and the mean melt fraction of the solid-like layer, $\phi_\mathrm{sl}$, which is always below $\phi_c$. The mean melt fraction of the melt-bearing region is reported as a diagnostic but is not used to drive the model, because it is not monotonic in $\Tp$.
+
+The integrals are evaluated on a uniform radial grid (5~km spacing by default). The grid brackets each crossing, and Newton's method on the analytic solidus then locates it exactly, so the crossing depths and their temperature derivatives, such as $\dd r_s / \dd \Tp = f(z_s) / [\Tp f'(z_s) - T_\mathrm{sol}'(z_s)]$, vary smoothly with $\Tp$. The integrals are exact for the piecewise-linear interpolant of the grid values, so the masses vary continuously with $\Tp$. When the solidus crossing reaches the core-mantle boundary, the solid mantle mass is set to exactly zero.
+
+% ======================================================================================================================
+\section{Mantle Energy Balance}\label{sec:energy}
+% ======================================================================================================================
+
+The sensible heat of an adiabatic mantle is $c_p \Tp \int \rho f \, \dd V$, and latent heat $L$ is absorbed as the melt mass increases. The potential temperature therefore evolves as
+\begin{equation}
+\left[ c_p M_f + L \frac{\dd M_\mathrm{melt}}{\dd \Tp} \right] \frac{\dd \Tp}{\dd t}
+= H_\mathrm{rad}(t) + \dot{E}_\mathrm{tid} - 4 \pi R^2 q,
+\qquad M_f = 4 \pi \rho \int_0^{R - R_c} f(z) \, r^2 \, \dd z,
+\label{eq:energy}
+\end{equation}
+where $q$ is the surface heat flux (Section~\ref{sec:surface}), $\dot{E}_\mathrm{tid}$ the tidal heating of the planet (Section~\ref{sec:tides}), and $H_\mathrm{rad}$ the radiogenic heating,
+\begin{equation}
+H_\mathrm{rad}(t) = M_\mathrm{mantle} \sum_i C_i H_i \, e^{\lambda_i (t_\odot - t)},
+\end{equation}
+summed over $^{238}$U, $^{235}$U, $^{232}$Th, and $^{40}$K with present-day concentrations $C_i$, specific heat production $H_i$, and decay constants $\lambda_i$, where $t_\odot = 4.6$~Gyr is the age at which the concentrations apply.
+
+This differs from GOOEY, where only the magma ocean above the solidification front carries sensible heat and latent heat is released at the front \citep{Schaefer2016}. The whole-mantle form follows from assumption~1. It is continuous from a fully molten to a fully solid mantle, and it releases latent heat wherever the melt fraction changes rather than only at the front. For the same cooling rate, it gives the mantle a larger thermal inertia, and hence a longer magma ocean lifetime, than GOOEY's form.
+
+% ======================================================================================================================
+\section{Convection, Surface Temperature, and Outgoing Radiation}\label{sec:surface}
+% ======================================================================================================================
+
+\subsection{Viscosity}
+
+The solid matrix follows an Arrhenius law weakened by melt, and the melt follows a Vogel-Fulcher-Tammann law increased by suspended crystals \citep{Roscoe1952,Lebrun2013},
+\begin{align}
+\eta_\mathrm{sol} &= A_s \exp\left(\frac{E_a}{R_g T}\right) e^{-\gamma \phi}, \\
+\eta_\mathrm{liq} &= A_l \exp\left(\frac{B}{T - T_0}\right) \left(1 - \frac{1 - \phi}{\chi_c}\right)^{-5/2}.
+\end{align}
+The two are joined by blending $\log \eta$ with a hyperbolic tangent in $\phi$ centered on $\phi_c$ with half-width $w_\phi = 0.05$. Across this width the viscosity changes by more than ten orders of magnitude.
+
+\subsection{Convective Heat Flux}
+
+Heat leaves the mantle through a convective boundary layer. With the Rayleigh number $\mathrm{Ra} = g \alpha (\Tp - \Ts) D^3 / (\nu \kappa)$, kinematic viscosity $\nu = \eta / \rho$, and thermal diffusivity $\kappa = k / (\rho c_p)$, the flux in the hard-turbulence scaling $\mathrm{Nu} = a \, \mathrm{Ra}^{1/3}$ is
+\begin{equation}
+q = a k (\Tp - \Ts) \frac{\mathrm{Ra}^{1/3}}{D}
+= a k \left( \frac{g \alpha}{\nu \kappa} \right)^{1/3} (\Tp - \Ts)^{4/3},
+\label{eq:heatflux}
+\end{equation}
+which is independent of the layer thickness $D$. The viscosity is evaluated at $\Tp$ and the bulk melt fraction $\bar{\phi}$. This reproduces the earlier model in both limits: while $\bar{\phi} > \phi_c$ the flux is that of a liquid magma ocean, and once $\bar{\phi} < \phi_c$ it is that of a partially molten solid. The boundary-layer thickness is $\delta = k (\Tp - \Ts) / q$, and the characteristic convective velocity $u = D / t_\mathrm{c}$ with $t_\mathrm{c} = \delta^2 / (5.38 \kappa)$ is used for solid-state degassing (Section~\ref{sec:degassing}).
+
+\subsection{Outgoing Radiation and Surface Temperature}
+
+The atmosphere is gray. Its optical depth, including pressure broadening, is
+\begin{equation}
+\tau = \frac{3}{2} \frac{P_\mathrm{atm}}{g} \left( \frac{\bar{\kappa} g}{3 P_0} \right)^{1/2},
+\end{equation}
+where $P_\mathrm{atm} = P_{\mathrm{H_2O}} + P_{\mathrm{O_2}}$, $\bar{\kappa}$ is the pressure-weighted mean of the water and oxygen absorption coefficients, and $P_0 = 1$~bar. In the Eddington approximation the net outgoing flux is
+\begin{equation}
+F_\mathrm{out} = \frac{2}{\tau + 2} \sigma \left( \Ts^4 - \Teq^4 \right),
+\qquad \Teq = \left[ \frac{(1 - A) L_\star(t)}{16 \pi \sigma a^2} \right]^{1/4},
+\end{equation}
+where $A$ is the Bond albedo and $L_\star(t)$ the bolometric luminosity of the star from an evolutionary track \citep{Baraffe2015}. Pre-main-sequence M dwarfs are one to two orders of magnitude brighter than on the main sequence, so $\Teq$ is initially much higher than today's value.
+
+Under assumption~4, the surface temperature is the root of
+\begin{equation}
+q(\Tp, \Ts) = F_\mathrm{out}(\Ts), \qquad \Teq \le \Ts \le \Tp.
+\end{equation}
+The difference $q - F_\mathrm{out}$ is positive at $\Teq$ and negative at $\Tp$, so a root always exists. Condensation can make $F_\mathrm{out}$ non-monotonic, and up to three roots can then exist, as in the runaway greenhouse. We take the hottest root, bracketed on a logarithmic grid in $\Tp - \Ts$ and refined with Brent's method. A planet cooling from a molten state thus stays on the hot branch until that branch disappears, the hysteresis that a surface with a small heat capacity would follow; at that point $\Ts$ drops to the next branch. This replaces a surface temperature ODE whose heat capacity (the full magma ocean column) double counted the mantle's thermal inertia.
+
+% ======================================================================================================================
+\section{Volatiles}\label{sec:volatiles}
+% ======================================================================================================================
+
+\subsection{Water in the Melt, Atmosphere, and Surface Ocean}
+
+Water dissolves in the melt following a power-law solubility, $X = s P_{\mathrm{H_2O}}^{\,n}$, where $X$ is the mass fraction of water in the melt \citep{Schaefer2016}. Crystals in the melt-bearing region hold $D X$ with partition coefficient $D$. If none of the water condensed, the fluid inventory would satisfy
+\begin{equation}
+W_f = X \left[ M_\mathrm{melt} + D (M_\mathrm{mr} - M_\mathrm{melt}) \right] + \frac{4 \pi R^2}{g} P_{\mathrm{H_2O}},
+\end{equation}
+which we solve for $X$ with Newton's method. Below the critical temperature of water, the vapor pressure cannot exceed saturation, $p_\mathrm{sat}(\Ts) = 10^{A_v - B_v / \Ts}$~bar. The cap is blended in with a hyperbolic tangent of 20~K half-width around 647~K. When the cap is active, the undissolved water is split between vapor at the capped pressure and a surface ocean. The melt stays in equilibrium with the total water load, vapor plus ocean, so $X$ is unchanged by condensation.
+
+\subsection{Exchange at the Base of the Melt Region}
+
+As the mantle cools, the solidus crossing rises and material leaves the melt-bearing region at the rate
+\begin{equation}
+\dot{M}_\mathrm{sol} = 4 \pi \rho r_s^2 \frac{\dd r_s}{\dd \Tp} \frac{\dd \Tp}{\dd t}.
+\end{equation}
+At the solidus the melt fraction is zero, so this material is entirely crystals. It carries water $D X \dot{M}_\mathrm{sol}$ and the excess oxygen of its FeO$_{1.5}$ into the solid mantle. When $\dot{M}_\mathrm{sol} < 0$ (remelting), the solid mantle returns water and oxygen to the melt at its mean concentrations, $W_s / M_\mathrm{s}$ and $O_s / M_\mathrm{s}$, where $M_\mathrm{s} = M_\mathrm{mantle} - M_\mathrm{mr}$.
+
+\subsection{Solid-State Degassing}\label{sec:degassing}
+
+Convection also carries solid mantle through the near-surface melting zone, where it partially melts and releases water. For a conductive lid of thickness $\delta$ above the adiabat, we compute the melt fraction in the upper 300~km and the water concentration of that melt by batch melting, $X_\mathrm{m} = x_s / [D + \phi (1 - D)]$ with $x_s = W_s / M_\mathrm{s}$. The degassing rate is
+\begin{equation}
+\dot{W}_\mathrm{degas} = 4 \pi R^2 \rho u \, \langle \phi \rangle \langle X_\mathrm{m} \rangle,
+\end{equation}
+where the angle brackets denote volume averages over the melting zones. Only melt below the liquid layer (deeper than $R - r_c$) counts: melt in the liquid layer is already in equilibrium with the atmosphere through the solubility law, and counting it here would degas the magma ocean twice. The rate is further weighted by the fraction of the 300~km window that lies below the liquid layer, so that solid-state degassing switches on continuously as the liquid layer thins and equals the unweighted rate once it is gone. Beneath a deep magma ocean the solid cumulates therefore keep their water, as in GOOEY. The convective quantities $\delta$ and $u$ use the solid-like layer's melt fraction $\phi_\mathrm{sl}$. The rate is linear in $W_s$, so the solid mantle's water decays smoothly toward zero.
+
+\subsection{Oxygen and Iron Redox}
+
+Hydrogen escape leaves behind oxygen, which either stays in the atmosphere as O$_2$ or oxidizes ferrous iron in the melt to ferric iron. The ferric-ferrous ratio of the melt follows \citet{Kress1991},
+\begin{equation}
+\ln \frac{X_{\mathrm{Fe_2O_3}}}{X_{\mathrm{FeO}}} = a \ln f_{\mathrm{O_2}} + \frac{b}{T} + c + \sum_i d_i X_i
++ e \left[ 1 - \frac{T_0}{T} - \ln \frac{T}{T_0} \right] + f \frac{P}{T} + g \frac{(T - T_0) P}{T} + h \frac{P^2}{T},
+\end{equation}
+with the published coefficients and a bulk silicate Earth composition. We take $T = \Tp$ and $P = P_{\mathrm{H_2O}}$. Setting $f_{\mathrm{O_2}} = P_{\mathrm{O_2}}$ and conserving the fluid oxygen, $O_f = \tfrac{1}{2} \mu_\mathrm{O} n_{\mathrm{FeO_{1.5}}} + 4 \pi R^2 P_{\mathrm{O_2}} / g$, gives the partition of $O_f$ between the melt-bearing region and the atmosphere. We solve it by fixed-point iteration when oxygen is scarce relative to iron and by bisection otherwise.
+
+% ======================================================================================================================
+\section{Atmospheric Escape}\label{sec:escape}
+% ======================================================================================================================
+
+The XUV luminosity is a fraction $f_\mathrm{XUV}$ of $L_\star(t)$. It is saturated at $f_\mathrm{sat}$ until $t_\mathrm{sat}$ and afterwards either decays as $(t / t_\mathrm{sat})^{\beta}$ with $\beta = -1.23$ \citep{Ribas2005} (high-XUV case) or drops to zero (low-XUV case). The energy-limited mass flux is \citep{Watson1981}
+\begin{equation}
+\Phi_\mathrm{EL} = \frac{\epsilon F_\mathrm{XUV} / 4}{G M_p / R}, \qquad F_\mathrm{XUV} = \frac{f_\mathrm{XUV} L_\star}{4 \pi a^2},
+\end{equation}
+with heating efficiency $\epsilon$. We treat the upper atmosphere as a mixture of H and O from dissociated water (mole fractions $x_\mathrm{H} = 2/3$, $x_\mathrm{O} = 1/3$). Hydrogen drags oxygen along once its flux exceeds the critical value set by the crossover mass \citep{Hunten1987,Luger2015}. With the binary diffusion coefficient $b = b_0 T_\mathrm{esc}^{0.75}$, the crossover mass is
+\begin{equation}
+\mu_c = \mu_\mathrm{O} + \frac{\mu_{c,0} - \mu_\mathrm{O}}{1 + x_\mathrm{O} \mu_\mathrm{O} / (x_\mathrm{H} \mu_\mathrm{H})},
+\qquad \mu_{c,0} = \mu_\mathrm{H} + \frac{k_B T_\mathrm{esc} \Phi_{\mathrm{H},0}}{b g x_\mathrm{H} m_p},
+\end{equation}
+where $\Phi_{\mathrm{H},0}$ is the energy-limited H number flux and $T_\mathrm{esc} = \Teq$. The H flux is $\Phi_\mathrm{H} = \Phi_{\mathrm{H},0} \mu_c / \mu_{c,0}$, and when $\Phi_\mathrm{H} \ge b g x_\mathrm{H} m_p (\mu_\mathrm{O} - \mu_\mathrm{H}) / (k_B T_\mathrm{esc})$ the oxygen flux is
+\begin{equation}
+\Phi_\mathrm{O} = \frac{x_\mathrm{O}}{x_\mathrm{H}} \Phi_\mathrm{H} \frac{\mu_c - \mu_\mathrm{O}}{\mu_c - \mu_\mathrm{H}}.
+\end{equation}
+Escape cannot remove more water than the planet holds, so both fluxes are multiplied by $W_f / (|W_f| + W_t)$, where $W_t = 4 \pi R^2 P_t / g$ is the water column of $P_t = 1$~Pa. This factor is essentially 1 for any real inventory. It vanishes linearly as the water runs out, and because it is odd it also restores a small integrator overshoot below zero. Each kilogram of hydrogen lost removes $\mu_{\mathrm{H_2O}} / (2 \mu_\mathrm{H})$ kilograms of water and adds $\mu_\mathrm{O} / (2 \mu_\mathrm{H})$ kilograms of oxygen to $O_f$. Escaping oxygen is removed from $O_f$. An optional mode raises the XUV absorption radius with the surface temperature and sets $T_\mathrm{esc} = \max(\Teq, 0.15 \Ts)$.
+
+% ======================================================================================================================
+\section{Tides and Orbital-Rotational Evolution}\label{sec:tides}
+% ======================================================================================================================
+
+\subsection{Tidal Response of the Planet}
+
+For tides, the planet has three layers: a fluid core that does not dissipate; the solid-like mantle between $R_c$ and $r_c$; and a liquid magma layer between $r_c$ and $R$ that also does not dissipate. As the mantle cools, $r_c$ rises from near the core toward the surface, and the dissipating volume grows accordingly.
+
+Unlike the thermal model, which takes the mantle density as uniform, the tidal response uses a self-compressed structure. Each layer follows a third-order Birch-Murnaghan equation of state \citep{Birch1947},
+\begin{equation}
+P(\eta) = \frac{3}{2} K_0 \left( \eta^{7/3} - \eta^{5/3} \right) \left[ 1 + \frac{3}{4} \left( K_0' - 4 \right) \left( \eta^{2/3} - 1 \right) \right], \qquad \eta = \rho / \rho_0,
+\end{equation}
+and the density, gravity, and pressure are integrated from the center outward in hydrostatic equilibrium, with the central pressure iterated until the surface pressure vanishes. The core takes the parameters of liquid iron, $K_0 = 109.7$~GPa and $K_0' = 4.66$ \citep{Anderson1994}, and the mantle those of a generic silicate, $K_0 = 130$~GPa and $K_0' = 4.5$. The two reference densities $\rho_0$ are adjusted once, at the start of a run, so that the solved core and mantle have the model's core and mantle masses. For the TRAPPIST-1e analog of Section~\ref{sec:example}, this places the core-mantle boundary at 87~GPa and gives a moment of inertia factor of 0.340. The magma follows the mantle's law with its density lowered by a fixed fraction, $\Delta\rho / \rho = 0.05$, at every pressure. A separate law for the melt, which is far more compressible than the solid, would make the melt denser than the solid beyond a few tens of gigapascals. A liquid denser than the solid beneath it would be gravitationally unstable, and the static treatment below would not apply.
+
+The solid-like layer has the viscosity of Section~\ref{sec:surface} evaluated at $\Tp$ and $\phi_\mathrm{sl}$, uniform throughout the layer. Its shear modulus softens with melt,
+\begin{equation}
+\mu = \begin{cases}
+\mu_s e^{-\kappa_\mu \phi} & \phi < \phi_c, \\
+\text{log-linear from } \mu(\phi_c) \text{ to } \mu_l & \phi_c \le \phi \le \phi_c + w_\phi, \\
+\mu_l & \phi > \phi_c + w_\phi,
+\end{cases}
+\end{equation}
+with $\mu_s = 60$~GPa, $\mu_l = 10^3$~Pa, and $\kappa_\mu = 8$. Its frequency-dependent response follows the Andrade rheology \citep{Andrade1910,Efroimsky2012}, with complex compliance
+\begin{equation}
+\tilde{J}(\omega) = J - \frac{i}{\eta \omega} + J \, \Gamma(1 + \alpha_A) \left( i \omega \zeta \frac{\eta}{\mu}
+\right)^{-\alpha_A}, \qquad J = 1/\mu,
+\end{equation}
+where $\alpha_A = 0.3$ and $\zeta = 1$.
+
+The complex Love number $k_2(\omega)$ of the layered planet is found at each tidal frequency by integrating the equations of viscoelastic-gravitational deformation from the center to the surface \citep{Takeuchi1972}, as implemented in the radial solver of TidalPy \citep{Renaud2021}. The core and the magma layer are treated as static liquids \citep{Saito1974}: they carry no shear stress and remain in hydrostatic equilibrium with the perturbed potential. The magma layer is then an equilibrium ocean. Its surface follows the deformed equipotential, and its weight presses on the solid beneath it. This load cancels most of the tidal forcing of the solid. If the magma were as dense as the solid, the cancellation would be complete: the tidal body force and the load would together amount to a hydrostatic pressure perturbation, which produces no shear. The forcing that remains grows with $\Delta\rho / \rho$. Over the evolution of the TRAPPIST-1e analog, the solid layer dissipates 7\% to 23\% of the homogeneous estimate below for $\Delta\rho / \rho$ between 0 and 0.1.
+
+In the static limit the cancellation does not depend on how thick the magma layer is. A melt layer only metres deep, however, could not flow fast enough to reach equilibrium within a tidal period. We therefore omit magma layers thinner than 1~km and let the solid reach the surface. The planet's heating jumps upward by a factor of several where such a layer disappears.
+
+A faster alternative, used in earlier versions of the model, gives each dissipating layer the Love number of a homogeneous body with the layer's complex rigidity,
+\begin{equation}
+k_2(\omega) = \frac{3/2}{1 + \dfrac{19}{2} \dfrac{\tilde{\mu}(\omega)}{\rho_p g R}}, \qquad \tilde{\mu} = 1 / \tilde{J},
+\end{equation}
+weighted by the layer's share of the planet's volume, $(r_c^3 - R_c^3) / R^3$. Here $\rho_p$ is the bulk density of the planet. This approximation ignores the fluid core, the density structure, and the load of the magma layer. With a magma layer present it overestimates the dissipation of the solid by a factor of 4 to 14.
+
+We also tested letting the solid layer's rigidity and viscosity follow the local melt fraction instead of its mean. At the same $\Tp$, this changes the heating by less than 25\%. The partially molten zone just below $r_c$ is too weak to dissipate much, because its Maxwell time is far shorter than the tidal period, and the dissipation is spread through the rest of the layer. The single temperature of the energy balance (Section~\ref{sec:energy}) is therefore an adequate reservoir for the tidal heat.
+
+The star responds with a constant phase lag, $k_2 = k_{2,h}(1 - i / Q_h)$, independent of frequency.
+
+\subsection{Dissipation and Secular Evolution}
+
+The tidal potential is expanded in Darwin-Kaula modes with frequencies \citep{Kaula1964,Renaud2021}
+\begin{equation}
+\omega_{lmpq} = (l - 2p + q) n - m \Omega,
+\end{equation}
+where $n = [G (M_h + M_p) / a^3]^{1/2}$ is the mean motion. We keep degree $l = 2$ and eccentricity functions through $e^{20}$, which remains accurate to $e \approx 0.6$. Each body's heating, and its contributions to $\dot{a}$, $\dot{e}$, and its own spin torque, are sums over modes of $-\mathrm{Im}[k_2(\omega_{lmpq})]$ weighted by eccentricity and obliquity functions and by the susceptibility $\tfrac{3}{2} G M_\mathrm{other}^2 R^5 / a^6$. We use the dual-body formulation of \citet{Boue2019} as implemented in TidalPy \citep{Renaud2021}. In $\dot{e}$, the difference between the derivatives of the tidal potential with respect to the mean anomaly and the argument of pericenter is summed mode by mode, because the two separate sums nearly cancel at small eccentricity. The spin rates evolve as $C \dot{\Omega} = \Gamma$, where $\Gamma$ is the tidal torque. The planet's moment of inertia $C_p$ is that of the fully solid, self-compressed structure, and the star's is $C_h = k_\star^2 M_h R_h^2$, with the gyration factor from the stellar models ($k_\star^2 \approx 0.07$ for the Sun and $\approx 0.2$ for fully convective M dwarfs; \citealt{Baraffe2015}).
+
+The formulation conserves energy and angular momentum. The heat dissipated in both bodies equals the loss of orbital and spin energy,
+\begin{equation}
+\dot{E}_{\mathrm{tid},p} + \dot{E}_{\mathrm{tid},h} = -\frac{\dd}{\dd t}\left( -\frac{G M_h M_p}{2 a} \right)
+- C_p \Omega_p \dot{\Omega}_p - C_h \Omega_h \dot{\Omega}_h,
+\end{equation}
+which the implementation satisfies to machine precision. All of the planet's tidal heat enters the mantle energy balance (Equation~\ref{eq:energy}). Tidal heating in the star is not tracked further.
+
+% ======================================================================================================================
+\section{Numerical Implementation}\label{sec:numerics}
+% ======================================================================================================================
+
+Each state variable is divided by a characteristic scale: the initial semi-major axis, $10^{-5}$~rad~s$^{-1}$ for spin rates, $10^3$~K for temperature, and the initial water inventory for all volatile reservoirs. Time is measured in Myr. The system is stiff: despinning takes kiloyears, circularization millions to billions of years, and the surface temperature and volatile equilibria are solved algebraically at every evaluation. We therefore integrate with an implicit method (BDF in SciPy) and relative tolerances of $10^{-5}$ or smaller. The stiffest part is the spin of a planet held near synchronous rotation, which relaxes on a timescale of about a day while the torque saturates within a relative spin offset of about $10^{-5}$. LSODA occasionally failed to converge there. The absolute tolerance on $W_f$ is set to a tenth of the escape taper width $W_t$. With a coarser tolerance the solver cannot resolve the taper once the water is gone and repeatedly steps across it. A run to 1~Gyr takes a few hundred to a thousand steps. Each evaluation of the right-hand side solves the planet's structure and its Love numbers at every tidal frequency (about 20~ms), so a run with tides takes about a minute, against a few seconds with the homogeneous approximation.
+
+The earlier versions switched among magma ocean, wet solid, and dry solid equations at terminal events. The rates jumped at every switch, and the partially molten regime between them was misclassified. In the present model a single right-hand side covers the whole evolution, and every term is a continuous function of the state. This continuity is checked by automated tests, along with energy and angular momentum conservation of the tidal module, closure of the water budget, and the flux balance at the surface.
+
+Initially the water inventory $W_0$ is spread uniformly through the mantle. The share in the melt-bearing region forms $W_f$ and the rest forms $W_s$. Excess oxygen is distributed the same way, following the initial Fe$^{3+}$/Fe$_\mathrm{tot}$ ratio.
+
+% ======================================================================================================================
+\section{Example: A TRAPPIST-1e Analog}\label{sec:example}
+% ======================================================================================================================
+
+Table~\ref{tab:params} lists the main parameters of a TRAPPIST-1e analog. The planet starts at $\Tp = 3000$~K with one Earth ocean of water, around a 0.09~$M_\odot$ star on its \citet{Baraffe2015} track. We integrate to 1~Gyr with the high-XUV prescription, with and without tides, for initial eccentricities of 0 to 0.3 and initial spin rates of 1, 3, and 10 times the mean motion.
+
+\begin{table}[h]
+\centering
+\caption{Main parameters of the TRAPPIST-1e example (baseline values unless noted).}\label{tab:params}
+\begin{tabular}{llr}
+\toprule
+Parameter & Symbol & Value \\
+\midrule
+Planet mass, radius & $M_p$, $R$ & 0.692 $M_\oplus$, 0.92 $R_\oplus$ \\
+Core radius, core mass fraction & $R_c / R$, -- & 0.55, 0.32 \\
+Semi-major axis & $a_0$ & 0.02925 au \\
+Initial water & $W_0$ & 1 Earth ocean \\
+Core, mantle equation of state & $K_0$, $K_0'$ & 109.7 GPa, 4.66; 130 GPa, 4.5 \\
+Magma density contrast & $\Delta\rho / \rho$ & 0.05 \\
+Star mass, radius, gyration factor & $M_h$, $R_h$, $k_\star^2$ & 0.0898 $M_\odot$, $8.29 \times 10^7$ m, 0.216 \\
+Star tides & $k_{2,h}$, $Q_h$ & 0.3, $3 \times 10^7$ \\
+XUV saturation & $f_\mathrm{sat}$, $t_\mathrm{sat}$, $\epsilon$ & $7 \times 10^{-4}$, 1 Gyr, 0.15 \\
+Specific heat, latent heat & $c_p$, $L$ & 1200 J kg$^{-1}$ K$^{-1}$, $4 \times 10^5$ J kg$^{-1}$ \\
+Thermal expansivity, conductivity & $\alpha$, $k$ & $2 \times 10^{-5}$ K$^{-1}$, 4.2 W m$^{-1}$ K$^{-1}$ \\
+Solidus branches & $s_{1,2}$, $b_{1,2}$ & 104.42, 26.53 K GPa$^{-1}$; 1420, 1825 K \\
+Liquidus offset & $\Delta T_\mathrm{liq}$ & 600 K \\
+Critical crystal fraction & $\chi_c$ & 0.6 \\
+Water solubility, partition & $s$, $n$, $D$ & $3.44 \times 10^{-8}$, 0.74, 0.01 \\
+Andrade parameters & $\alpha_A$, $\zeta$ & 0.3, 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Without tides the bulk melt fraction falls below $\phi_c$ after about 6.3~kyr and below 0.3 after 1~Myr, and the mantle then cools slowly beneath a thin atmosphere. With tides the early evolution is nearly the same: the liquid mantle dissipates little, and the planet despins to near-synchronous rotation within a few kiloyears. As the mantle approaches the rheological transition, however, the solid-like layer thickens and becomes strongly dissipative, and tidal heating begins to offset the surface heat loss. This is a thermostat of the kind described for Io by \citet{Moore2003}. For $e_0 = 0.3$ it holds the bulk melt fraction at $\phi_c$ for 42~Myr. For $e_0 = 0.1$ and 0.2 the heating is not quite enough to hold the transition, and the melt fraction settles a few percent below it (0.35 to 0.40) for tens to hundreds of millions of years. The time for the bulk melt fraction to reach $\phi_c$ is therefore a poor measure of the tidal effect, and Table~\ref{tab:results} also lists the time to fall below 0.3. By that measure tides extend the partially molten stage by a factor of 1.5 at $e_0 = 0.05$ and by factors of 55 to 180 for $e_0 \ge 0.1$. The heating fades as the orbit circularizes, which takes several hundred million years: the magma layer's load weakens the dissipation (Section~\ref{sec:tides}), so the orbit damps slowly and a small eccentricity remains after 1~Gyr.
+
+\begin{table}[h]
+\centering
+\caption{Time for the bulk melt fraction to fall below the rheological transition $\phi_c = 0.4$ and below 0.3, and the eccentricity after 1~Gyr, for an initial spin of 3 times the mean motion. Values for spins of 1 and 10 times the mean motion differ by about 10\% or less, except the time to reach $\phi_c$ for $e_0 \le 0.2$, which is about 13~kyr at a spin of 10 times the mean motion.}
+\label{tab:results}
+\begin{tabular}{lrrr}
+\toprule
+Case & Melt below $\phi_c$ (yr) & Melt below 0.3 (yr) & $e$ at 1~Gyr \\
+\midrule
+No tides & $6.3 \times 10^3$ & $1.0 \times 10^6$ & 0.2 \\
+$e_0 = 0$ & $6.5 \times 10^3$ & $9.8 \times 10^5$ & 0 \\
+$e_0 = 0.01$ & $6.2 \times 10^3$ & $1.0 \times 10^6$ & 0.0036 \\
+$e_0 = 0.05$ & $6.3 \times 10^3$ & $1.5 \times 10^6$ & 0.0083 \\
+$e_0 = 0.1$ & $6.6 \times 10^3$ & $5.6 \times 10^7$ & 0.0090 \\
+$e_0 = 0.2$ & $7.8 \times 10^3$ & $1.7 \times 10^8$ & 0.0074 \\
+$e_0 = 0.3$ & $4.2 \times 10^7$ & $1.8 \times 10^8$ & 0.0041 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three results bear directly on outgassing (Table~\ref{tab:outgassing}). First, with tides the surface water inventory peaks earlier, at 7--8~kyr rather than 71~kyr for $e_0 \ge 0.2$. Second, the time to lose half of the water is about 0.8~Myr in every case. For this planet, energy-limited escape driven by the young star removes the water faster than the interior can hold it back: water dissolved in the long-lived melt simply resupplies the atmosphere. Third, the water stored in the solid cumulates (about 1\% of the inventory) reaches the surface much later with tides. It degasses once the liquid layer thins below the degassing window, and tidal heating keeps that layer thick. Half of it has degassed after 12~Myr without tides but after 98~Myr for $e_0 = 0.05$ and 240--320~Myr for $e_0 \ge 0.1$. Even $e_0 = 0.05$, which barely changes the partially molten stage, delays this late outgassing by a factor of eight. With the homogeneous Love numbers of Section~\ref{sec:tides}, which dissipate more strongly and circularize the orbit sooner, the delays are shorter (last column). In every case enough melt remains to take up the oxygen left by escape, so O$_2$ never exceeds $\sim 10^{-4}$~Pa. The tidal effect on the bulk of the outgassing should be largest where escape is slower relative to the tidal lifetime: for larger water inventories, weaker XUV, or wider orbits.
+
+\begin{table}[h]
+\centering
+\caption{Outgassing timing for an initial spin of 3 times the mean motion. The last column repeats the solid-mantle degassing time with the homogeneous Love numbers.}
+\label{tab:outgassing}
+\begin{tabular}{lrrrr}
+\toprule
+Case & Peak surface & Half of water & \multicolumn{2}{c}{Half of solid-mantle water degassed (yr)} \\
+ & water (yr) & lost (yr) & Radial solver & Homogeneous \\
+\midrule
+No tides & $7.1 \times 10^4$ & $8.1 \times 10^5$ & $1.2 \times 10^7$ & $1.2 \times 10^7$ \\
+$e_0 = 0.01$ & $5.8 \times 10^4$ & $8.3 \times 10^5$ & $1.2 \times 10^7$ & $1.5 \times 10^7$ \\
+$e_0 = 0.05$ & $6.0 \times 10^4$ & $8.2 \times 10^5$ & $9.8 \times 10^7$ & $5.2 \times 10^7$ \\
+$e_0 = 0.1$ & $4.0 \times 10^4$ & $8.4 \times 10^5$ & $2.4 \times 10^8$ & $6.7 \times 10^7$ \\
+$e_0 = 0.2$ & $6.8 \times 10^3$ & $8.1 \times 10^5$ & $3.2 \times 10^8$ & $7.3 \times 10^7$ \\
+$e_0 = 0.3$ & $8.1 \times 10^3$ & $8.1 \times 10^5$ & $3.0 \times 10^8$ & $6.4 \times 10^7$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ======================================================================================================================
+\section{Limitations}\label{sec:limitations}
+% ======================================================================================================================
+
+\begin{itemize}
+\item A single potential temperature and a linearized adiabat describe the whole mantle. Layered convection, a thermally distinct cumulate pile, and core cooling are not modeled.
+\item The rheological transition is a steep function of melt fraction, so the tidal thermostat sits where the viscosity and rigidity parameterizations place it. The width $w_\phi$ and critical crystal fraction $\chi_c$ directly set the equilibrium melt fraction.
+\item The magma layer is an equilibrium (static) ocean. Its tidal flow, resonances, and viscous dissipation are neglected, although they can be significant in some regimes. The load it places on the solid, and therefore the solid's heating, depends on the assumed density contrast $\Delta\rho / \rho$, which in reality varies with depth and crystal content. The 1~km cutoff for thin layers is a numerical choice, not a result.
+\item The self-compressed structure is used only for the tidal response and the planet's moment of inertia; the thermal model keeps a uniform mantle density. The solid layer has one rigidity and one viscosity, and the creep law has no pressure dependence.
+\item All melt is assumed to exchange volatiles with the atmosphere, which is an upper bound on outgassing from subsurface melt.
+\item Instellation is not averaged over eccentric orbits, and obliquity is set to zero by default.
+\item The atmosphere is gray and contains only water and oxygen. Where its surface temperature balance has several roots, the hottest is taken, which is a choice rather than a result.
+\item Escape is energy-limited with diffusion-limited drag of oxygen. There is no loss driven by the outflow of the thick steam atmosphere itself, and no photochemistry.
+\end{itemize}
+
+\begin{thebibliography}{}
+
+\bibitem[{Andrade(1910)}]{Andrade1910} Andrade, E. N. da C. 1910, Proc. R. Soc. Lond. A, 84, 1
+
+\bibitem[{Anderson \& Ahrens(1994)}]{Anderson1994} Anderson, W. W., \& Ahrens, T. J. 1994, J. Geophys. Res., 99, 4273
+
+\bibitem[{Baraffe et al.(2015)}]{Baraffe2015} Baraffe, I., Homeier, D., Allard, F., \& Chabrier, G. 2015, A\&A, 577, A42
+
+\bibitem[{Birch(1947)}]{Birch1947} Birch, F. 1947, Phys. Rev., 71, 809
+
+\bibitem[{Bou\'e \& Efroimsky(2019)}]{Boue2019} Bou\'e, G., \& Efroimsky, M. 2019, Celest. Mech. Dyn. Astron., 131, 30
+
+\bibitem[{Efroimsky(2012)}]{Efroimsky2012} Efroimsky, M. 2012, ApJ, 746, 150
+
+\bibitem[{Hamano et al.(2013)}]{Hamano2013} Hamano, K., Abe, Y., \& Genda, H. 2013, Nature, 497, 607
+
+\bibitem[{Henning et al.(2009)}]{Henning2009} Henning, W. G., O'Connell, R. J., \& Sasselov, D. D. 2009, ApJ, 707, 1000
+
+\bibitem[{Hunten et al.(1987)}]{Hunten1987} Hunten, D. M., Pepin, R. O., \& Walker, J. C. G. 1987, Icarus, 69, 532
+
+\bibitem[{Kaula(1964)}]{Kaula1964} Kaula, W. M. 1964, Rev. Geophys., 2, 661
+
+\bibitem[{Kress \& Carmichael(1991)}]{Kress1991} Kress, V. C., \& Carmichael, I. S. E. 1991, Contrib. Mineral. Petrol., 108, 82
+
+\bibitem[{Lebrun et al.(2013)}]{Lebrun2013} Lebrun, T., Massol, H., Chassefi\`ere, E., et al. 2013, J. Geophys. Res. Planets, 118, 1155
+
+\bibitem[{Luger \& Barnes(2015)}]{Luger2015} Luger, R., \& Barnes, R. 2015, Astrobiology, 15, 119
+
+\bibitem[{Moore(2003)}]{Moore2003} Moore, W. B. 2003, J. Geophys. Res., 108, 5096
+
+\bibitem[{Renaud et al.(2021)}]{Renaud2021} Renaud, J. P., Henning, W. G., Saxena, P., et al. 2021, PSJ, 2, 4
+
+\bibitem[{Ribas et al.(2005)}]{Ribas2005} Ribas, I., Guinan, E. F., G\"udel, M., \& Audard, M. 2005, ApJ, 622, 680
+
+\bibitem[{Roscoe(1952)}]{Roscoe1952} Roscoe, R. 1952, Br. J. Appl. Phys., 3, 267
+
+\bibitem[{Saito(1974)}]{Saito1974} Saito, M. 1974, J. Phys. Earth, 22, 123
+
+\bibitem[{Schaefer et al.(2016)}]{Schaefer2016} Schaefer, L., Wordsworth, R. D., Berta-Thompson, Z., \& Sasselov, D. 2016, ApJ, 829, 63
+
+\bibitem[{Takeuchi \& Saito(1972)}]{Takeuchi1972} Takeuchi, H., \& Saito, M. 1972, in Methods in Computational Physics, Vol. 11, ed. B. A. Bolt (New York: Academic Press), 217
+
+\bibitem[{Watson et al.(1981)}]{Watson1981} Watson, A. J., Donahue, T. M., \& Walker, J. C. G. 1981, Icarus, 48, 150
+
+\end{thebibliography}
+
+\end{document}

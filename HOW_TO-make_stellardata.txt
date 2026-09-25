@@ -12,11 +12,16 @@ step 2. Find the *mass* closest to the star you're trying to use
 step 3. IMPORTANT: These are log values, so you will need to do
     10^[value] for each column value.
 
-In this model I save these files as tab delimited text files. You can save
-them however you want - excel files that are comma separated, .npz files,
-space separated files, whatever you're feeling. Just make sure you're also
-changing the read-in method to correspond to that (so like, using pd.read_excel
-if you're using excel, or sep=',' if you're using comma separated, etc.)
+Save the file as tab-delimited text with a header row naming the two columns Lbol and tbol
+(utils/stellar.py reads it; ages outside the table use the first or last value). Then point
+the planet TOML at it:
+
+    [star]
+    stellar_track_file = "data/stellar_dataMyStar.txt"   # relative to the repo root
+
+The track sets both the instellation (equilibrium temperature) and, through f_sat, the XUV
+flux. The BHAC15 file also lists gyration radii (k2conv, k2rad); k2conv^2 + k2rad^2 is a good
+value for star.tides.moi_factor.
 
 If you wanna freestyle a stellar file using your own data and wanna compare with
 the original GOOEY model but don't have the MATLAB license to do so, feel free

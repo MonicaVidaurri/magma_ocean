@@ -1,8 +1,13 @@
 # Created by https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,c++,c
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,visualstudiocode,c++,c
 
-*.png
-*.txt
+# Model outputs (run_model.py, auto_run_v3.py). Data and docs are .txt files, so do not ignore *.txt globally.
+output/
+results/
+*_output*.txt
+/*.png
+.DS_Store
+.idea/
 
 ### C ###
 # Prerequisites

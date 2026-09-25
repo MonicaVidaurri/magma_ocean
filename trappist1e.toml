@@ -4,7 +4,7 @@
 [simulation]
 version = "0.8d"  # simulation version just for tracking changes.
 # Primary numerical solver and integration settings
-method = "LSODA"
+method = "BDF"                      # LSODA can fail on the stiff tidal spin lock
 rtol = 3.0e-5
 atol = 1.0e-6
 start_time_years = 1.0
@@ -24,6 +24,7 @@ mass_star_relative = 0.0898         # 8.98% of Solar Mass
 lum_star_relative = 0.000553        # 0.055% of Solar Luminosity (Bolometric)
 host_radius = 8.291e7               # ~0.1192 R_sun (m)
 spin_days = 3.295                   # Currently favored rotation period
+stellar_track_file = "data/stellar_dataTrappist1.txt"  # BHAC15 0.09 Msun track
 
 [star.xuv]
 # Fractional XUV luminosity (L_xuv / L_bol)
@@ -31,6 +32,9 @@ f_sat = 7.0e-4                      # Typical for TRAPPIST-1 (Wheatley et al. 20
 decay_beta = -1.23                  # Ribas et al. decay slope
 tsat_years = 1.0e9                  # M-dwarf saturation lasts ~1 Gyr
 heating_efficiency = 0.15           # Standard hydrodynamic efficiency
+
+[star.tides]
+moi_factor = 0.216                  # Fully convective; BHAC15 gyration radius at 0.09 Msun
 
 # ==============================================================================
 # Planet Bulk Parameters (TRAPPIST-1e)

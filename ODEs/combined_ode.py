@@ -1,615 +1,341 @@
+"""
+Continuous coupled thermal, volatile, orbital, and rotational evolution of a magma ocean planet.
+
+One right-hand side covers the whole evolution, from a fully molten mantle to a solid one and back, with no phase
+switching. Every quantity that depended on the old "magma ocean / wet solid / dry solid" phases is now a continuous
+function of the mantle potential temperature through the melt distribution of an adiabatic mantle (see
+utils/get_melt_fractions.py and model.tex).
+"""
+from collections import namedtuple
+
 import numpy as np
-from physics.mantleheatflux import mantleheatflux
-from utils.get_melt_fractions import get_melt_fractions
-from utils.get_pressure2 import get_pressure2
-from utils.get_massbalance4 import get_massbalance4
-from utils.get_flux import get_flux
-from utils.get_loss import get_loss
+
 from physics.degas2 import degas2
-from physics.viscosity import viscosity
+from physics.mantleheatflux import mantleheatflux
 from physics.radiogenics import get_radiogenic_heat
 from physics.shear_modulus import calc_shear_modulus
-from physics.tides import calculate_tidal_dissipation
-from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
+from physics.tides import TidalModel, orbital_motion
+from physics.viscosity import viscosity
+from utils.config import resolve_path
+from utils.get_comp import get_comp
+from utils.get_loss import get_loss
+from utils.get_massbalance4 import get_massbalance4
+from utils.get_melt_fractions import calc_melt_state
+from utils.get_pressure2 import get_pressure2
+from utils.logger import get_logger
+from utils.mantle_grid import build_mantle_grid
+from utils.stellar import StellarTrack
+from utils.surface_temperature import solve_surface_temperature
+
+log = get_logger(__name__)
+
+# ======================================================================================================================
+# State Vector Layout
+# ======================================================================================================================
+STATE_NAMES = (
+    'semi_major_axis',     # [0] m
+    'eccentricity',        # [1]
+    'spin_freq_host',      # [2] rad/s
+    'spin_freq_planet',    # [3] rad/s
+    'temp_mantle',         # [4] Mantle potential temperature, K
+    'mass_water_solid',    # [5] Water in the mantle below the melt region, kg
+    'mass_water_fluid',    # [6] Water in the melt region + atmosphere + surface ocean, kg
+    'mass_oxygen_fluid',   # [7] Excess oxygen (FeO1.5 in the melt region + atmospheric O2), kg
+    'mass_oxygen_solid',   # [8] Excess oxygen locked in FeO1.5 of the solid mantle, kg
+)
+NUM_STATES = len(STATE_NAMES)
+
+PlanetProperties = namedtuple('PlanetProperties', (
+    'radius', 'mass', 'radius_core', 'mass_core', 'mass_mantle', 'density_mantle', 'gravity', 'surface_area',
+    'mass_water_initial', 'mass_host', 'radius_host'))
 
 
-# ---------------------------------------------------------------------------
-# Shared state-vector layout (same for both phase ODEs)
-#   [0]  semi_major_axis   [1]  eccentricity
-#   [2]  spin_freq_host    [3]  spin_freq_planet
-#   [4]  temp_mantle       [5]  radius_solid
-#   [6]  mass_water_solid  [7]  mass_water_atm
-#   [8]  mass_oxygen_atm   [9]  mass_O2_solid
-#   [10] temp_surface
-# ---------------------------------------------------------------------------
-
-
-def _unpack_header(Tr, Mmantle, Rp, Rc, Mh, Mp):
-    """Unpack & guard-clip the state vector. Returns commonly needed scalars."""
-    semi_a       = Tr[0]
-    orbital_freq = semi_a2orbital_motion(semi_a, Mh, Mp)
-    eccentricity = Tr[1]
-    spin_freq_h  = Tr[2]
-    spin_freq_p  = Tr[3]
-    temp_mantle  = Tr[4]
-    radius_solid = float(np.clip(Tr[5], Rc, Rp))
-
-    mass_water_solid      = max(0.0, Tr[6])
-    mass_frac_water_solid = mass_water_solid / Mmantle
-    mass_water_atm        = max(0.0, Tr[7])
-    mass_oxygen_atm       = max(0.0, Tr[8])
-    temp_surface          = Tr[10]
-
-    temp_mantle = max(temp_mantle, temp_surface + 1.0)
-
-    return (semi_a, orbital_freq, eccentricity, spin_freq_h, spin_freq_p,
-            temp_mantle, radius_solid,
-            mass_water_solid, mass_frac_water_solid,
-            mass_water_atm, mass_oxygen_atm, temp_surface)
-
-
-def _b_coeff(Rp, radius_solid, rho_mantle, g, temp_mantle, thermo):
-    """Solidification rate coefficient dRs/dT (m/K).
-
-    Tanh blending across the low-P / high-P solidus branch crossover removes
-    the discontinuity in B (and thus in dT_m_dt) when radius_solid passes
-    through the crossover depth.
+class MagmaOceanModel:
     """
-    Cp    = thermo['specific_heat_mantle']
-    alpha = thermo['thermal_expansion']
+    Physical model of one planet: static setup plus the right-hand side of the evolution equations.
 
-    D_cross = 405e9 / 77.89 / rho_mantle / g        # crossover depth (m)
-    depth   = Rp - radius_solid
-    w       = thermo.get('solidus_crossover_width_km', 30.0) * 1e3  # half-width (m)
-    blend   = 0.5 * (1.0 + np.tanh((depth - D_cross) / w))          # 0=low-P, 1=high-P
-
-    Tsol_a = ((1.0 - blend) * thermo['solidus_slope_low_p']
-              + blend       * thermo['solidus_slope_high_p']) * 1e-9
-    Tsol_b = ((1.0 - blend) * thermo['solidus_intercept_low_p']
-              + blend       * thermo['solidus_intercept_high_p'])
-
-    return (
-        (Cp * (Tsol_b * alpha - Tsol_a * rho_mantle * Cp)) /
-        (g * (Tsol_a * rho_mantle * Cp - alpha * temp_mantle)**2)
-    )
-
-
-def _calc_pressure_H2O_smooth(temp_surface, mass_water_atm, g, surface_area,
-                               crit_temp_water, vapor_a, vapor_b):
+    Parameters
+    ----------
+    params : dict
+        Merged configuration from `utils.config.load_config`.
     """
-    Atmospheric water vapor pressure with a smooth transition near the critical
-    temperature (647 K), replacing the hard if/else that caused a discontinuous
-    spike in surface temperature.
 
-    Above crit_temp_water: all water is supercritical vapor → p = p_full.
-    Below crit_temp_water: vapor/liquid equilibrium → p = min(p_sat, p_full).
-    Near crit_temp_water: smooth tanh blend between the two regimes.
+    def __init__(self, params):
+        self.params = params
+        constants = params['constants']
+        star      = params['star']
+        planet    = params['planet']
 
-    The blend width of 20 K is tight enough to be physically accurate but wide
-    enough to eliminate the numerical discontinuity.
-    """
-    p_full = mass_water_atm * g / surface_area
-    p_sat  = 10.0 ** (vapor_a - vapor_b / temp_surface) * 1e5
-    p_below_crit = min(p_sat, p_full)
+        radius       = planet['radius_planet_relative'] * constants['radius_earth']
+        mass         = planet['mass_planet_relative'] * constants['mass_earth']
+        radius_core  = planet['radius_core_relative'] * radius
+        mass_core    = planet['core_mass_fraction'] * mass
+        mass_mantle  = mass - mass_core
+        density      = mass_mantle / ((4.0 / 3.0) * np.pi * (radius**3 - radius_core**3))
+        gravity      = constants['G'] * mass / radius**2
+        self.planet  = PlanetProperties(
+            radius=radius, mass=mass, radius_core=radius_core, mass_core=mass_core, mass_mantle=mass_mantle,
+            density_mantle=density, gravity=gravity, surface_area=4.0 * np.pi * radius**2,
+            mass_water_initial=planet['ocean_mass_multiplier'] * constants['mass_ocean_earth'],
+            mass_host=star['mass_star_relative'] * constants['mass_sun'], radius_host=star['host_radius'])
 
-    blend = 0.5 * (1.0 + np.tanh((temp_surface - crit_temp_water) / 20.0))
-    return blend * p_full + (1.0 - blend) * p_below_crit
+        self.grid = build_mantle_grid(radius, radius_core, gravity, mass_mantle, params)
+        self.critical_melt_fraction = 1.0 - planet['rheology']['critical_crystal_fraction']
+        self.fixed_eccentricity = bool(planet['orbit']['fixed_eccentricity'])
+        self.fixed_spin = bool(planet['fixed_spin'])
+        self.stellar_track = StellarTrack(resolve_path(star['stellar_track_file']), constants['lum_sun'])
+        self.tidal_model = TidalModel(params, radius, mass, radius_core, mass_core, density,
+                                      self.planet.radius_host, self.planet.mass_host)
+        self.composition = get_comp(params)
+        self.mass_frac_FeO_total = planet['oxide_composition']['mass_frac_FeO_total']
 
+        if planet['initial_mantle_temp'] > self.grid.max_monotonic_temperature:
+            log.warning(f"Initial mantle temperature {planet['initial_mantle_temp']:.0f} K exceeds "
+                        f"{self.grid.max_monotonic_temperature:.0f} K, above which melt fraction is no longer "
+                        f"monotonic with depth. Melt-region boundaries will be approximate.")
 
-def _surface_temp_ode(q_mantle, flux_to_space, Rp, pressure_H2O, g,
-                      heat_capacity_water, heat_capacity_mantle, density_crust,
-                      crust_depth_phys, latent_heat_vaporization,
-                      mass_water_atm, crit_temp_water, vapor_a, vapor_b,
-                      temp_surface):
-    """Surface temperature ODE term (shared by both phase ODEs)."""
-    surface_area = 4.0 * np.pi * Rp**2
-    net_surface_power = surface_area * (q_mantle - flux_to_space)
+    # ==================================================================================================================
+    # Initial Conditions
+    # ==================================================================================================================
+    def initial_state(self):
+        """
+        Initial state vector from the configuration.
 
-    # Latent heat of condensation/vaporization slows the surface temperature
-    # evolution near the dew point.  T_sat is found from the Antoine equation
-    # inverted at the actual atmospheric column pressure, capped at crit_temp_water.
-    latent_heat_capacity = 0.0
-    if mass_water_atm > 0:
-        P_actual = mass_water_atm * g / surface_area
-        P_crit   = 10**(vapor_a - vapor_b / crit_temp_water) * 1e5
-        T_sat    = (crit_temp_water if P_actual >= P_crit
-                    else vapor_b / (vapor_a - np.log10(P_actual / 1e5)))
-        activation = 0.5 * (1.0 + np.tanh((T_sat - temp_surface) / 20.0))
-        if activation > 1e-4:
-            P_sat     = 10**(vapor_a - vapor_b / temp_surface) * 1e5
-            dP_sat_dT = P_sat * np.log(10) * vapor_b / (temp_surface**2)
-            latent_heat_capacity = (latent_heat_vaporization
-                                    * (surface_area / g) * dP_sat_dT * activation)
+        Water starts uniformly mixed in the mantle; the melt region's share is fluid, the rest is solid. Initial
+        excess oxygen follows the configured Fe3+/Fe ratio in the same proportions.
+        """
+        params    = self.params
+        constants = params['constants']
+        planet    = params['planet']
+        comp      = planet['oxide_composition']
+        props     = self.planet
 
-    heat_cap_atm   = heat_capacity_water * (pressure_H2O * surface_area / g)
-    heat_cap_crust = (heat_capacity_mantle * density_crust
-                      * (4.0 / 3.0) * np.pi * (Rp**3 - (Rp - crust_depth_phys)**3))
-    return net_surface_power / (heat_cap_atm + heat_cap_crust + latent_heat_capacity)
+        semi_major_axis = planet['orbit']['initial_semi_major_axis'] * constants['au']
+        mean_motion     = orbital_motion(semi_major_axis, props.mass_host, props.mass, constants['G'])
+        temp_mantle     = planet['initial_mantle_temp']
 
+        melt = calc_melt_state(temp_mantle, self.grid, self.critical_melt_fraction)
+        mass_melt_region = melt.mass_melt_region
+        log.info(f"Initial melt region depth {(props.radius - melt.radius_solidus) / 1e3:0.1f} km, "
+                 f"bulk melt fraction {melt.melt_fraction_bulk:0.3f}.")
 
-# ===========================================================================
-# MAGMA OCEAN ODE
-# Active when bulk melt fraction >= melt_fraction_threshold.
-# ===========================================================================
-def moODE_magma_ocean(
-        t_sec, Tr, Rp, Rc, Mmantle, Teq, rho_mantle, g, Ts, Ps, OLR, ASR,
-        t_flux, Lbol, Xi, FeOt, Temp_K, P_Pa, tsat, Mp, LStar, Rh, Mh,
-        tides_on_flag, params):
-    """
-    ODE for the magma ocean phase.
+        water_mass_fraction = props.mass_water_initial / props.mass_mantle
+        oxygen_per_mantle_mass = (comp['mass_frac_FeO_total'] * comp['ratio_Fe3_to_total_Fe']
+                                  * (constants['molar_mass_O'] / 2.0 / comp['molar_mass_FeO']))
 
-    Handles dissolved-volatile partitioning, MO heat flux driven from the
-    solidification front, and latent-heat thermal inertia. Terminated by
-    event_mo_ends when meltfrac_bulk drops below the threshold.
-    """
-    constants = params['constants']
-    mat       = params['planet']['material']
-    atm       = params['planet']['atmosphere']
-    thermo    = params['planet']['thermodynamics']
-    comp      = params['planet']['oxide_composition']
+        state = np.zeros(NUM_STATES, dtype=np.float64)
+        state[0] = semi_major_axis
+        state[1] = planet['orbit']['initial_eccentricity']
+        state[2] = 2.0 * np.pi / (86400.0 * params['star']['spin_days'])
+        state[3] = planet['initial_spin_multiplier'] * mean_motion
+        state[4] = temp_mantle
+        state[5] = water_mass_fraction * (props.mass_mantle - mass_melt_region)
+        state[6] = water_mass_fraction * mass_melt_region
+        state[7] = oxygen_per_mantle_mass * mass_melt_region
+        state[8] = oxygen_per_mantle_mass * (props.mass_mantle - mass_melt_region)
+        return state
 
-    molar_mass_O      = constants['molar_mass_O']
-    molar_mass_H2O    = constants['molar_mass_H2O']
-    molar_mass_H      = constants['molar_mass_H']
-    molar_mass_FeO1_5 = comp['molar_mass_FeO1_5']
+    # ==================================================================================================================
+    # Right-Hand Side
+    # ==================================================================================================================
+    def rhs(self, t_sec, state):
+        """Time derivative of the state vector (SI units)."""
+        return self.evaluate(t_sec, state)[0]
 
-    heat_capacity_mantle     = thermo['specific_heat_mantle']
-    heat_capacity_water      = thermo['specific_heat_H2O']
-    density_crust            = mat['density_mantle']
-    latent_heat_fusion       = thermo['latent_heat_fusion']
-    latent_heat_vaporization = thermo['latent_heat_vaporization']
-    crit_temp_water = atm['critical_temp_H2O']
-    vapor_a         = atm['vapor_press_a']
-    vapor_b         = atm['vapor_press_b']
+    def evaluate(self, t_sec, state):
+        """
+        Time derivative of the state vector plus every diagnostic used to compute it.
 
-    surface_area = 4.0 * np.pi * Rp**2
+        Parameters
+        ----------
+        t_sec : float
+            Time since formation; also the stellar age used for the luminosity track (s).
+        state : ndarray
+            State vector (see STATE_NAMES).
 
-    (semi_a, orbital_freq, eccentricity, spin_freq_h, spin_freq_p,
-     temp_mantle, radius_solid,
-     mass_water_solid, mass_frac_water_solid,
-     mass_water_atm, mass_oxygen_atm, temp_surface) = _unpack_header(
-        Tr, Mmantle, Rp, Rc, Mh, Mp)
+        Returns
+        -------
+        dstate_dt : ndarray
+        diagnostics : dict
+        """
+        params    = self.params
+        constants = params['constants']
+        planet    = params['planet']
+        thermo    = planet['thermodynamics']
+        comp      = planet['oxide_composition']
+        props     = self.planet
 
-    # --- Melt fractions ---
-    _, meltfrac_bulk, meltfrac_mo = get_melt_fractions(temp_mantle, params['_grid'])
-    if temp_mantle <= thermo['solidus_intercept_low_p']:
-        meltfrac_bulk = 0.0
-        meltfrac_mo   = 0.0
+        radius       = props.radius
+        gravity      = props.gravity
+        surface_area = props.surface_area
+        density      = props.density_mantle
+        mass_mantle  = props.mass_mantle
 
-    mass_magma_ocean = max(0.0, (4.0 / 3.0) * np.pi * rho_mantle * (Rp**3 - radius_solid**3))
+        semi_major_axis = state[0]
+        # The integrator may probe slightly outside physical bounds between accepted steps. Fluid inventories feed
+        # nonlinear equilibria that need non-negative input. Solid inventories only enter sinks that are linear in
+        # them, so they stay signed: a small overshoot below zero then relaxes back instead of freezing in place.
+        eccentricity    = max(state[1], 0.0)
+        spin_host       = state[2]
+        spin_planet     = state[3]
+        temp_mantle     = state[4]
+        water_solid     = state[5]
+        water_fluid     = max(state[6], 0.0)
+        oxygen_fluid    = max(state[7], 0.0)
+        oxygen_solid    = state[8]
 
-    # --- Solidification rate coefficient ---
-    B = _b_coeff(Rp, radius_solid, rho_mantle, g, temp_mantle, thermo)
+        # --- Melt distribution ---
+        melt = calc_melt_state(temp_mantle, self.grid, self.critical_melt_fraction)
+        mass_melt_region  = melt.mass_melt_region
+        mass_crystals_mr  = max(mass_melt_region - melt.mass_melt, 0.0)
+        mass_solid_mantle = melt.mass_below_solidus
+        water_frac_solid  = water_solid / mass_solid_mantle if mass_solid_mantle > 0.0 else 0.0
 
-    # --- Rheology ---
-    solid_shear_modulus = calc_shear_modulus(meltfrac_bulk, params)
-    nu_solid_bulk = viscosity(temp_mantle, temp_surface, rho_mantle,
-                              Tr[6] / Mmantle, meltfrac_bulk, params)
+        # --- Star ---
+        age_years       = t_sec / constants['seconds_per_year']
+        luminosity_bol  = self.stellar_track.luminosity(age_years)
+        instellation    = luminosity_bol / (4.0 * np.pi * semi_major_axis**2)
+        temp_equilibrium = ((1.0 - planet['albedo']) * instellation / (4.0 * constants['stefan_boltzmann']))**0.25
 
-    # --- Water & Oxygen pressures (dissolved equilibrium) ---
-    if mass_water_atm > 0.0 and mass_magma_ocean > 0.0:
-        pressure_H2O, mass_frac_water_melt, partition_coeff_H2O = get_pressure2(
-            temp_mantle, radius_solid, mass_magma_ocean, Mmantle,
-            Rp, g, Rc, mass_water_atm, params
-        )
-    else:
-        pressure_H2O, mass_frac_water_melt, partition_coeff_H2O = 0.0, 0.0, 0.0
+        # --- Volatile equilibrium in the melt region ---
+        pressure_H2O_eq, water_frac_melt, partition_coeff_H2O = get_pressure2(
+            melt.mass_melt, mass_crystals_mr, mass_mantle, radius, gravity, water_fluid, params)
 
-    if mass_oxygen_atm > 0.0 and mass_magma_ocean > 0.0:
-        pressure_O2, mass_frac_FeO1_5, _, _ = get_massbalance4(
-            temp_mantle, pressure_H2O, mass_magma_ocean,
-            mass_oxygen_atm, Xi, FeOt, g, Rp, params
-        )
-        if pressure_O2 < 0.0:
-            pressure_O2      = mass_oxygen_atm * g / surface_area
+        if oxygen_fluid > 0.0 and mass_melt_region > 0.0:
+            pressure_O2, mass_frac_FeO1_5, _, _ = get_massbalance4(
+                temp_mantle, pressure_H2O_eq, mass_melt_region, oxygen_fluid, self.composition,
+                self.mass_frac_FeO_total, gravity, radius, params)
+            if pressure_O2 < 0.0:
+                pressure_O2      = oxygen_fluid * gravity / surface_area
+                mass_frac_FeO1_5 = 0.0
+        else:
+            pressure_O2      = oxygen_fluid * gravity / surface_area
             mass_frac_FeO1_5 = 0.0
-    else:
-        pressure_O2, mass_frac_FeO1_5 = 0.0, 0.0
 
-    # --- Heat flux (MO convection from solidification front) ---
-    q_mantle, Db, uc, Ra, nu_ = mantleheatflux(
-        temp_mantle, temp_surface, radius_solid, Rp, Rc, g, rho_mantle,
-        mass_frac_water_melt, meltfrac_mo, params
-    )
+        # --- Surface temperature (quasi-static flux balance) ---
+        # q = c (T_m - T_s)^(4/3). The convective viscosity uses the bulk melt fraction: it is monotonic in T_m and
+        # reproduces the old model in both limits (the old magma ocean and solid phases). The mean melt fraction of the
+        # melt region is not monotonic in T_m, so using it creates a spurious cooling feedback.
+        heat_flux_ref, _, _, _, viscosity_convective = mantleheatflux(
+            temp_mantle, 0.0, props.radius_core, radius, props.radius_core, gravity, density, water_frac_solid,
+            melt.melt_fraction_bulk, params)
+        convective_coefficient = heat_flux_ref / temp_mantle**(4.0 / 3.0)
+        surface = solve_surface_temperature(temp_mantle, convective_coefficient, temp_equilibrium, pressure_H2O_eq,
+                                            pressure_O2, radius, gravity, params)
+        temp_surface = surface.temp_surface
+        pressure_H2O = surface.pressure_H2O
 
-    # --- Energy budget ---
-    flux_to_space            = get_flux(temp_surface, Teq, pressure_H2O, pressure_O2, Rp, g, params)
-    flux_loss_H, flux_loss_O = get_loss(t_flux, Lbol, t_sec, pressure_O2, pressure_H2O,
-                                        tsat, semi_a, Mp, Rp, LStar, temp_surface, params)
-    radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
+        # --- Water after condensation ---
+        # Condensation splits the undissolved water between vapor and a surface ocean. The melt stays in equilibrium
+        # with the total water load (vapor + ocean), so the dissolved fraction from get_pressure2 is unchanged.
+        water_dissolved = water_frac_melt * (melt.mass_melt + partition_coeff_H2O * mass_crystals_mr)
+        water_vapor     = pressure_H2O * surface_area / gravity
+        water_ocean     = max(water_fluid - water_dissolved - water_vapor, 0.0)
 
-    # --- Tidal dissipation (to solidification front) ---
-    visc_solid = nu_solid_bulk * rho_mantle
-    da_dt, de_dt, dspin_dt_h, dspin_dt_p, _, tidal_heating_p, _, _, _ = (
-        calculate_tidal_dissipation(
-            eccentricity, orbital_freq, spin_freq_p, spin_freq_h, Rp, Rh, Mp, Mh,
-            Rc, visc_solid, solid_shear_modulus, radius_solid, tides_on_flag, params
+        # --- Solid-layer rheology and tides ---
+        melt_frac_solid_layer = melt.melt_fraction_solid_layer
+        shear_solid     = calc_shear_modulus(melt_frac_solid_layer, params)
+        viscosity_solid = viscosity(temp_mantle, temp_surface, density, water_frac_solid, melt_frac_solid_layer,
+                                    params) * density
+        tides = self.tidal_model.calc_rates(semi_major_axis, eccentricity, spin_host, spin_planet, viscosity_solid,
+                                            shear_solid, melt.radius_rheological)
+
+        # --- Mantle energy balance ---
+        radiogenic_heating = get_radiogenic_heat(t_sec, mass_mantle, params)
+        surface_heat_loss  = surface_area * surface.heat_flux
+        heat_capacity = (thermo['specific_heat_mantle'] * self.grid.mass_adiabat
+                         + thermo['latent_heat_fusion'] * melt.dmass_melt_dtemp)
+        dtemp_mantle_dt = (radiogenic_heating + tides.tidal_heating_planet - surface_heat_loss) / heat_capacity
+
+        # --- Exchange across the base of the melt region ---
+        # Mass leaving the melt region (positive when the solidus front rises during cooling).
+        mass_solidifying_rate = (4.0 * np.pi * density * melt.radius_solidus**2 * melt.dradius_solidus_dtemp
+                                 * dtemp_mantle_dt)
+        if mass_solidifying_rate >= 0.0:
+            # New cumulate carries crystal-hosted water and all FeO1.5 of the melt region at its current fraction.
+            water_to_solid  = partition_coeff_H2O * water_frac_melt * mass_solidifying_rate
+            oxygen_to_solid = (mass_frac_FeO1_5 * 0.5 * (constants['molar_mass_O'] / comp['molar_mass_FeO1_5'])
+                               * mass_solidifying_rate)
+        elif mass_solid_mantle > 0.0:
+            # Remelting returns solid-mantle volatiles at the solid's mean concentration.
+            water_to_solid  = water_frac_solid * mass_solidifying_rate
+            oxygen_to_solid = (oxygen_solid / mass_solid_mantle) * mass_solidifying_rate
+        else:
+            water_to_solid  = 0.0
+            oxygen_to_solid = 0.0
+
+        # --- Solid-state degassing (convective processing of the solid mantle through its melting zone) ---
+        heat_flux_solid, boundary_layer_solid, velocity_solid, _, _ = mantleheatflux(
+            temp_mantle, temp_surface, props.radius_core, radius, props.radius_core, gravity, density,
+            water_frac_solid, melt_frac_solid_layer, params)
+        if water_frac_solid != 0.0:
+            # Only melt in the solid-like layer degasses this way; the liquid layer's melt is already equilibrated.
+            _, degas_rate, _, _ = degas2(temp_mantle, boundary_layer_solid, heat_flux_solid, water_frac_solid, radius,
+                                         gravity, temp_surface, density, radius - melt.radius_rheological, params)
+            degassing = degas_rate * surface_area * velocity_solid
+        else:
+            degassing = 0.0
+
+        # --- Escape ---
+        flux_loss_H, flux_loss_O = get_loss(t_sec, luminosity_bol, pressure_O2, pressure_H2O, semi_major_axis,
+                                            props.mass, radius, temp_surface, params)
+        # Escape cannot remove more water than the planet's fluid reservoir holds. Scale it by W / (|W| + W_taper),
+        # where W_taper is the water column of `taper_pressure`: ~1 for any real inventory, linear through zero, and
+        # odd, so a small integrator overshoot below zero is restored smoothly rather than left in a dead zone.
+        water_taper   = planet['atmosphere']['escape']['taper_pressure'] * surface_area / gravity
+        supply_factor = state[6] / (abs(state[6]) + water_taper)
+        hydrogen_loss = surface_area * flux_loss_H * supply_factor
+        oxygen_loss   = surface_area * flux_loss_O * supply_factor
+        water_loss        = hydrogen_loss * (constants['molar_mass_H2O'] / (2.0 * constants['molar_mass_H']))
+        oxygen_from_water = hydrogen_loss * (constants['molar_mass_O'] / (2.0 * constants['molar_mass_H']))
+
+        # --- Assemble ---
+        dstate_dt = np.empty(NUM_STATES, dtype=np.float64)
+        dstate_dt[0] = tides.da_dt
+        # A fixed eccentricity stands in for forcing by other planets (e.g., a mean-motion resonance), which is not
+        # modeled. The semi-major axis still evolves, so the tidal heat is still drawn from the orbit.
+        dstate_dt[1] = 0.0 if self.fixed_eccentricity else tides.de_dt
+        dstate_dt[2] = tides.dspin_dt_host
+        # A fixed spin stands in for a torque that is not modeled (e.g., atmospheric thermal tides) holding the planet
+        # out of tidal spin equilibrium; the energy that torque supplies is not tracked.
+        dstate_dt[3] = 0.0 if self.fixed_spin else tides.dspin_dt_planet
+        dstate_dt[4] = dtemp_mantle_dt
+        dstate_dt[5] = water_to_solid - degassing
+        dstate_dt[6] = -water_to_solid + degassing - water_loss
+        dstate_dt[7] = oxygen_from_water - oxygen_loss - oxygen_to_solid
+        dstate_dt[8] = oxygen_to_solid
+
+        diagnostics = dict(
+            temp_surface=temp_surface,
+            temp_equilibrium=temp_equilibrium,
+            luminosity_bol=luminosity_bol,
+            radius_solid=melt.radius_solidus,
+            radius_rheological=melt.radius_rheological,
+            meltfrac=melt.melt_fraction_bulk,
+            meltfrac_surface=melt.melt_fraction_surface,
+            meltfrac_melt_region=melt.melt_fraction_melt_region,
+            meltfrac_solid_layer=melt_frac_solid_layer,
+            mass_melt=melt.mass_melt,
+            mass_melt_region=mass_melt_region,
+            Patm=pressure_H2O,
+            PO2=pressure_O2,
+            mass_water_dissolved=water_dissolved,
+            mass_water_vapor=water_vapor,
+            mass_water_ocean=water_ocean,
+            water_frac_melt=water_frac_melt,
+            tidal_shear=shear_solid,
+            tidal_visc=viscosity_solid,
+            tidal_scale=tides.tidal_scale_planet,
+            convective_viscosity=viscosity_convective * density,
+            Q_tid=tides.tidal_heating_planet,
+            Q_tid_host=tides.tidal_heating_host,
+            Q_rad=radiogenic_heating,
+            Q_surface=surface_heat_loss,
+            heat_capacity=heat_capacity,
+            degassing_rate=degassing,
+            water_to_solid_rate=water_to_solid,
+            water_loss_rate=water_loss,
+            oxygen_loss_rate=oxygen_loss,
+            orbital_freq=orbital_motion(semi_major_axis, props.mass_host, props.mass, constants['G']),
         )
-    )
-
-    # --- Thermal evolution ---
-    mantle_cooling_watts = surface_area * q_mantle
-
-    # Fix B: tidal heating dissipates in the solid layer only — it is NOT added to the
-    # liquid layer's thermal budget.  tidal_heating_p is still used above for da/dt, de/dt.
-    #
-    # Fix C: credit only the liquid layer's proportional share of radiogenic heating.
-    # The solid layer beneath radius_solid retains its own share; as the MO shrinks,
-    # the liquid layer heats only from radioactive elements in the melt.
-    frac_molten = mass_magma_ocean / Mmantle
-    total_mantle_heating_watts = radiogenic_heating_watts * frac_molten
-
-    # Latent heat reduces effective thermal inertia during solidification.
-    # Only the convecting magma ocean mass participates — not the already-solid interior.
-    thermal_inertia = ((heat_capacity_mantle * mass_magma_ocean)
-                       - (4.0 * np.pi * rho_mantle * latent_heat_fusion * radius_solid**2) * B)
-
-    dT_m_dt = (-mantle_cooling_watts + total_mantle_heating_watts) / thermal_inertia
-
-    rate_rs = B * dT_m_dt
-    if radius_solid >= Rp and rate_rs > 0.0:
-        rate_rs = 0.0
-    elif radius_solid <= Rc and rate_rs < 0.0:
-        rate_rs = 0.0
-
-    mass_solidified      = 4.0 * np.pi * rho_mantle * radius_solid**2 * rate_rs
-    safe_mass_solidified = max(mass_solidified, 0.0)
-
-    # --- Volatile rates ---
-    total_mass_loss_H           = surface_area * flux_loss_H
-    total_mass_loss_O           = surface_area * flux_loss_O
-    water_loss_to_space         = total_mass_loss_H * (molar_mass_H2O / (2.0 * molar_mass_H))
-    oxygen_generated_from_water = total_mass_loss_H * (molar_mass_O  / (2.0 * molar_mass_H))
-
-    water_partitioned  = (partition_coeff_H2O * mass_frac_water_melt * safe_mass_solidified
-                          if mass_frac_water_melt > 0 else 0.0)
-    oxygen_partitioned = (mass_frac_FeO1_5 * 0.5
-                          * (molar_mass_O / molar_mass_FeO1_5) * safe_mass_solidified)
-
-    # --- Assemble ODE ---
-    dTr_dt = np.zeros(11, dtype=np.float64)
-    dTr_dt[0] = da_dt
-    dTr_dt[1] = de_dt
-    dTr_dt[2] = dspin_dt_h
-    dTr_dt[3] = dspin_dt_p
-    dTr_dt[4] = dT_m_dt
-    dTr_dt[5] = rate_rs
-    # solid water: gains
-    dTr_dt[6] = water_partitioned
-    # atm water: drains
-    dTr_dt[7] = (-water_partitioned - water_loss_to_space
-                 if mass_water_atm > 0.0 else 0.0)
-    dTr_dt[8] = oxygen_generated_from_water - total_mass_loss_O - oxygen_partitioned
-    # solid O2 sink
-    dTr_dt[9] = oxygen_partitioned 
-    dTr_dt[10] = _surface_temp_ode(
-        q_mantle, flux_to_space, Rp, pressure_H2O, g,
-        heat_capacity_water, heat_capacity_mantle, density_crust,
-        Rp - radius_solid,        # MO column acts as "crust" for surface heat cap
-        latent_heat_vaporization, mass_water_atm,
-        crit_temp_water, vapor_a, vapor_b, temp_surface
-    )
-    return dTr_dt
-
-
-# ===========================================================================
-# SOLID MANTLE ODE
-# Active when bulk melt fraction < melt_fraction_threshold.
-# ===========================================================================
-def moODE_solid(
-        t_sec, Tr, Rp, Rc, Mmantle, Teq, rho_mantle, g, Ts, Ps, OLR, ASR,
-        t_flux, Lbol, Xi, FeOt, Temp_K, P_Pa, tsat, Mp, LStar, Rh, Mh,
-        tides_on_flag, params):
-    """
-    ODE for the solid mantle phase.
-
-    Handles vapour-pressure water equilibrium, solid-state degassing, and
-    whole-mantle convection. radius_solid still evolves so remelting episodes
-    feed back into meltfrac_bulk correctly. Terminated by event_mo_starts
-    when meltfrac_bulk rises above the threshold.
-    """
-    constants = params['constants']
-    mat       = params['planet']['material']
-    atm       = params['planet']['atmosphere']
-    thermo    = params['planet']['thermodynamics']
-
-    molar_mass_O   = constants['molar_mass_O']
-    molar_mass_H2O = constants['molar_mass_H2O']
-    molar_mass_H   = constants['molar_mass_H']
-
-    heat_capacity_mantle     = thermo['specific_heat_mantle']
-    heat_capacity_water      = thermo['specific_heat_H2O']
-    density_crust            = mat['density_mantle']
-    latent_heat_vaporization = thermo['latent_heat_vaporization']
-    crit_temp_water = atm['critical_temp_H2O']
-    vapor_a         = atm['vapor_press_a']
-    vapor_b         = atm['vapor_press_b']
-
-    surface_area = 4.0 * np.pi * Rp**2
-
-    (semi_a, orbital_freq, eccentricity, spin_freq_h, spin_freq_p,
-     temp_mantle, radius_solid,
-     mass_water_solid, mass_frac_water_solid,
-     mass_water_atm, mass_oxygen_atm, temp_surface) = _unpack_header(
-        Tr, Mmantle, Rp, Rc, Mh, Mp)
-
-    # --- Bulk melt fraction ---
-    _, meltfrac_bulk, _ = get_melt_fractions(temp_mantle, params['_grid'])
-    if temp_mantle <= thermo['solidus_intercept_low_p']:
-        meltfrac_bulk = 0.0
-
-    # --- Solidification rate coefficient (needed for remelting feedback) ---
-    B = _b_coeff(Rp, radius_solid, rho_mantle, g, temp_mantle, thermo)
-
-    # --- Rheology ---
-    solid_shear_modulus = calc_shear_modulus(meltfrac_bulk, params)
-    nu_solid_bulk = viscosity(temp_mantle, temp_surface, rho_mantle,
-                              Tr[6] / Mmantle, meltfrac_bulk, params)
-
-    # --- Water & Oxygen pressures (vapour equilibrium) ---
-    pressure_H2O = _calc_pressure_H2O_smooth(
-        temp_surface, mass_water_atm, g, surface_area,
-        crit_temp_water, vapor_a, vapor_b)
-
-    pressure_O2 = mass_oxygen_atm * g / surface_area
-
-    # --- Heat flux (convection over the full solid mantle) ---
-    q_mantle, Db, uc, Ra, nu_ = mantleheatflux(
-        temp_mantle, temp_surface, Rc, Rp, Rc, g, rho_mantle,
-        mass_frac_water_solid, meltfrac_bulk, params
-    )
-
-    # --- Energy budget ---
-    flux_to_space            = get_flux(temp_surface, Teq, pressure_H2O, pressure_O2, Rp, g, params)
-    flux_loss_H, flux_loss_O = get_loss(t_flux, Lbol, t_sec, pressure_O2, pressure_H2O,
-                                        tsat, semi_a, Mp, Rp, LStar, temp_surface, params)
-    radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
-
-    # --- Tidal dissipation (full planet radius) ---
-    visc_solid = nu_solid_bulk * rho_mantle
-    da_dt, de_dt, dspin_dt_h, dspin_dt_p, _, tidal_heating_p, _, _, _ = (
-        calculate_tidal_dissipation(
-            eccentricity, orbital_freq, spin_freq_p, spin_freq_h, Rp, Rh, Mp, Mh,
-            Rc, visc_solid, solid_shear_modulus, Rp, tides_on_flag, params
-        )
-    )
-
-    # --- Thermal evolution (no latent heat) ---
-    mantle_cooling_watts       = surface_area * q_mantle
-    total_mantle_heating_watts = radiogenic_heating_watts + tidal_heating_p
-
-    dT_m_dt = (-mantle_cooling_watts + total_mantle_heating_watts) / (heat_capacity_mantle * Mmantle)
-
-    # radius_solid evolves to capture remelting episodes that trigger event_mo_starts
-    rate_rs = B * dT_m_dt
-    if radius_solid >= Rp and rate_rs > 0.0:
-        rate_rs = 0.0
-    elif radius_solid <= Rc and rate_rs < 0.0:
-        rate_rs = 0.0
-
-    # --- Volatile rates ---
-    total_mass_loss_H           = surface_area * flux_loss_H
-    total_mass_loss_O           = surface_area * flux_loss_O
-    water_loss_to_space         = total_mass_loss_H * (molar_mass_H2O / (2.0 * molar_mass_H))
-    oxygen_generated_from_water = total_mass_loss_H * (molar_mass_O  / (2.0 * molar_mass_H))
-
-    if mass_frac_water_solid > 1e-9:
-        _, degas_rate, _, _ = degas2(temp_mantle, Db, q_mantle, mass_frac_water_solid,
-                                     Rp, g, temp_surface, params)
-        total_degassing = degas_rate * surface_area * uc
-    else:
-        total_degassing = 0.0
-
-    # --- Assemble ODE ---
-    dTr_dt = np.zeros(11, dtype=np.float64)
-    dTr_dt[0] = da_dt
-    dTr_dt[1] = de_dt
-    dTr_dt[2] = dspin_dt_h
-    dTr_dt[3] = dspin_dt_p
-    dTr_dt[4] = dT_m_dt
-    dTr_dt[5] = rate_rs
-    # solid water: drains
-    dTr_dt[6] = -total_degassing
-    # atm water
-    dTr_dt[7] = total_degassing - water_loss_to_space
-    # atm O2
-    dTr_dt[8] = oxygen_generated_from_water - total_mass_loss_O
-    # solid O2: no active sink or source
-    dTr_dt[9] = 0.0 
-    dTr_dt[10] = _surface_temp_ode(
-        q_mantle, flux_to_space, Rp, pressure_H2O, g,
-        heat_capacity_water, heat_capacity_mantle, density_crust,
-        Db,          # boundary layer depth as "crust" for surface heat cap
-        latent_heat_vaporization, mass_water_atm,
-        crit_temp_water, vapor_a, vapor_b, temp_surface
-    )
-    return dTr_dt
-
-
-# ===========================================================================
-# DRY SOLID MANTLE ODE
-# Active when melt fraction < threshold AND solid water mass fraction < dry_solid_threshold.
-# ===========================================================================
-def moODE_dry_solid(
-        t_sec, Tr, Rp, Rc, Mmantle, Teq, rho_mantle, g, Ts, Ps, OLR, ASR,
-        t_flux, Lbol, Xi, FeOt, Temp_K, P_Pa, tsat, Mp, LStar, Rh, Mh,
-        tides_on_flag, params):
-    """
-    ODE for the dry solid mantle phase.
-
-    Identical to moODE_solid but without solid-state degassing — the volatile
-    source in the solid is exhausted. radius_solid still evolves so tidal
-    remelting episodes can trigger event_mo_starts.
-
-    Phase transition rules (enforced by run_model loop, not events):
-      dry_solid → MO      : allowed (tidal/radiogenic remelting)
-      dry_solid → wet_solid: NEVER — once the solid is desiccated there is no
-                             mechanism to re-wet it. When MO refreezes after a
-                             dry_solid episode the loop checks solid water mass
-                             and dispatches back to dry_solid, not wet_solid.
-    """
-    constants = params['constants']
-    mat       = params['planet']['material']
-    atm       = params['planet']['atmosphere']
-    thermo    = params['planet']['thermodynamics']
-
-    molar_mass_O   = constants['molar_mass_O']
-    molar_mass_H2O = constants['molar_mass_H2O']
-    molar_mass_H   = constants['molar_mass_H']
-
-    heat_capacity_mantle     = thermo['specific_heat_mantle']
-    heat_capacity_water      = thermo['specific_heat_H2O']
-    density_crust            = mat['density_mantle']
-    latent_heat_vaporization = thermo['latent_heat_vaporization']
-    crit_temp_water = atm['critical_temp_H2O']
-    vapor_a         = atm['vapor_press_a']
-    vapor_b         = atm['vapor_press_b']
-
-    surface_area = 4.0 * np.pi * Rp**2
-
-    (semi_a, orbital_freq, eccentricity, spin_freq_h, spin_freq_p,
-     temp_mantle, radius_solid,
-     _, mass_frac_water_solid,
-     mass_water_atm, mass_oxygen_atm, temp_surface) = _unpack_header(
-        Tr, Mmantle, Rp, Rc, Mh, Mp)
-
-    # --- Bulk melt fraction ---
-    _, meltfrac_bulk, _ = get_melt_fractions(temp_mantle, params['_grid'])
-    if temp_mantle <= thermo['solidus_intercept_low_p']:
-        meltfrac_bulk = 0.0
-
-    # --- Solidification rate coefficient (needed for remelting feedback) ---
-    B = _b_coeff(Rp, radius_solid, rho_mantle, g, temp_mantle, thermo)
-
-    # --- Rheology ---
-    solid_shear_modulus = calc_shear_modulus(meltfrac_bulk, params)
-    nu_solid_bulk = viscosity(temp_mantle, temp_surface, rho_mantle,
-                              mass_frac_water_solid, meltfrac_bulk, params)
-
-    # --- Water & Oxygen pressures (vapour equilibrium, no dissolved phase) ---
-    pressure_H2O = _calc_pressure_H2O_smooth(
-        temp_surface, mass_water_atm, g, surface_area,
-        crit_temp_water, vapor_a, vapor_b)
-
-    pressure_O2 = mass_oxygen_atm * g / surface_area
-
-    # --- Heat flux (convection over the full solid mantle) ---
-    q_mantle, Db, _, _, _ = mantleheatflux(
-        temp_mantle, temp_surface, Rc, Rp, Rc, g, rho_mantle,
-        mass_frac_water_solid, meltfrac_bulk, params
-    )
-
-    # --- Energy budget ---
-    flux_to_space            = get_flux(temp_surface, Teq, pressure_H2O, pressure_O2, Rp, g, params)
-    flux_loss_H, flux_loss_O = get_loss(t_flux, Lbol, t_sec, pressure_O2, pressure_H2O,
-                                        tsat, semi_a, Mp, Rp, LStar, temp_surface, params)
-    radiogenic_heating_watts = get_radiogenic_heat(t_sec, Mmantle, params)
-
-    # --- Tidal dissipation (full planet radius) ---
-    visc_solid = nu_solid_bulk * rho_mantle
-    da_dt, de_dt, dspin_dt_h, dspin_dt_p, _, tidal_heating_p, _, _, _ = (
-        calculate_tidal_dissipation(
-            eccentricity, orbital_freq, spin_freq_p, spin_freq_h, Rp, Rh, Mp, Mh,
-            Rc, visc_solid, solid_shear_modulus, Rp, tides_on_flag, params
-        )
-    )
-
-    # --- Thermal evolution (no latent heat) ---
-    mantle_cooling_watts       = surface_area * q_mantle
-    total_mantle_heating_watts = radiogenic_heating_watts + tidal_heating_p
-
-    dT_m_dt = (-mantle_cooling_watts + total_mantle_heating_watts) / (heat_capacity_mantle * Mmantle)
-
-    # radius_solid still evolves to capture remelting episodes
-    rate_rs = B * dT_m_dt
-    if radius_solid >= Rp and rate_rs > 0.0:
-        rate_rs = 0.0
-    elif radius_solid <= Rc and rate_rs < 0.0:
-        rate_rs = 0.0
-
-    # --- Volatile rates (no degassing) ---
-    total_mass_loss_H           = surface_area * flux_loss_H
-    total_mass_loss_O           = surface_area * flux_loss_O
-    water_loss_to_space         = total_mass_loss_H * (molar_mass_H2O / (2.0 * molar_mass_H))
-    oxygen_generated_from_water = total_mass_loss_H * (molar_mass_O  / (2.0 * molar_mass_H))
-
-    # --- Assemble ODE ---
-    dTr_dt = np.zeros(11, dtype=np.float64)
-    dTr_dt[0] = da_dt
-    dTr_dt[1] = de_dt
-    dTr_dt[2] = dspin_dt_h
-    dTr_dt[3] = dspin_dt_p
-    dTr_dt[4] = dT_m_dt
-    dTr_dt[5] = rate_rs
-    # solid water: source exhausted
-    dTr_dt[6] = 0.0
-    # atm water: escape only
-    dTr_dt[7] = -water_loss_to_space
-    # atm O2
-    dTr_dt[8] = oxygen_generated_from_water - total_mass_loss_O
-    # solid O2: no active sink or source
-    dTr_dt[9] = 0.0
-    dTr_dt[10] = _surface_temp_ode(
-        q_mantle, flux_to_space, Rp, pressure_H2O, g,
-        heat_capacity_water, heat_capacity_mantle, density_crust,
-        Db,
-        latent_heat_vaporization, mass_water_atm,
-        crit_temp_water, vapor_a, vapor_b, temp_surface
-    )
-    return dTr_dt
-
-
-# ===========================================================================
-# PHASE TRANSITION EVENTS
-# ===========================================================================
-def make_phase_events(params, Mmantle):
-    """
-    Return terminal event functions for all three phase transitions.
-
-    event_mo_ends     — MO → wet solid; meltfrac_bulk decreasing through threshold.
-    event_mo_starts   — any solid → MO; meltfrac_bulk increasing through threshold.
-    event_solid_dries — wet solid → dry solid; solid water mass fraction
-                        decreasing through dry_solid_threshold.
-
-    All functions receive *dimensional* (t_sec, y_dim) because
-    StateScaler.wrap_event unscales before calling.
-    """
-    mf_threshold      = params['planet']['convection']['melt_fraction_threshold']
-    mf_width          = params['planet']['convection']['phase_transition_width']
-    solidus_low_p_int = params['planet']['thermodynamics']['solidus_intercept_low_p']
-    dry_threshold     = params['planet']['thermodynamics'].get('dry_solid_threshold', 1e-9)
-
-    # Asymmetric thresholds prevent chattering at the phase boundary.
-    # The MO→solid and solid→MO crossings are separated by 2*mf_width so
-    # neither event can fire at the exact state left by the other.
-    mo_end_threshold   = mf_threshold - mf_width   # MO ends below this
-    mo_start_threshold = mf_threshold + mf_width   # MO restarts above this
-
-    def event_mo_ends(t_sec, y_dim):
-        temp_mantle = max(y_dim[4], y_dim[10] + 1.0)
-        _, meltfrac_bulk, _ = get_melt_fractions(temp_mantle, params['_grid'])
-        if temp_mantle <= solidus_low_p_int:
-            meltfrac_bulk = 0.0
-        return meltfrac_bulk - mo_end_threshold
-
-    event_mo_ends.terminal  = True
-    event_mo_ends.direction = -1   # fires only when meltfrac is decreasing
-
-    def event_mo_starts(t_sec, y_dim):
-        temp_mantle = max(y_dim[4], y_dim[10] + 1.0)
-        _, meltfrac_bulk, _ = get_melt_fractions(temp_mantle, params['_grid'])
-        if temp_mantle <= solidus_low_p_int:
-            meltfrac_bulk = 0.0
-        return meltfrac_bulk - mo_start_threshold
-
-    event_mo_starts.terminal  = True
-    event_mo_starts.direction = +1  # fires only when meltfrac is increasing
-
-    def event_solid_dries(_, y_dim):
-        mass_water_solid = max(0.0, y_dim[6])
-        return mass_water_solid / Mmantle - dry_threshold
-
-    event_solid_dries.terminal  = True
-    event_solid_dries.direction = -1  # fires only when solid water is decreasing
-
-    return event_mo_ends, event_mo_starts, event_solid_dries
+        return dstate_dt, diagnostics

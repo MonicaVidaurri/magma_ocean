@@ -1,6 +1,9 @@
 import numpy as np
 from .get_fO2 import get_fO2
 from .get_massbalance2 import get_massbalance2
+from .logger import get_logger
+
+log = get_logger(__name__)
 
 def get_massbalance4(
         melt_temp,
@@ -113,8 +116,9 @@ def get_massbalance4(
         tolerance = num['solver_tolerance']
         
         while count <= max_iters:
-            # Protect against log(<=0) or division by zero
-            safe_Fe3 = np.clip(moles_Fe3_current, 1e-20, moles_iron_total - 1e-20)
+            # Protect against log(<=0) or division by zero. The upper bound is relative because subtracting 1e-20
+            # from a ~1e22 mole inventory leaves it unchanged in float64.
+            safe_Fe3 = np.clip(moles_Fe3_current, 1e-20, moles_iron_total * (1.0 - 1e-15))
             
             # Calculate next estimate based on equilibrium relation
             log_ratio = np.log(safe_Fe3 / (moles_iron_total - safe_Fe3))
@@ -151,7 +155,7 @@ def get_massbalance4(
         
         # Diagnostics
         if moles_feo1_5 > moles_iron_total:
-            print(f"Warning: FeO1.5 moles ({moles_feo1_5}) exceeds Total Fe moles ({moles_iron_total})")
+            log.warning(f"FeO1.5 moles ({moles_feo1_5}) exceeds Total Fe moles ({moles_iron_total})")
 
     # =====================================================================
     # --- Branch 2: High Oxygen (Robust Bisection Solver) ---
@@ -164,7 +168,7 @@ def get_massbalance4(
         
         # Diagnostics
         if moles_feo1_5 > moles_iron_total:
-             print(f"Warning: FeO1.5 moles ({moles_feo1_5}) exceeds Total Fe moles ({moles_iron_total})")
+             log.warning(f"FeO1.5 moles ({moles_feo1_5}) exceeds Total Fe moles ({moles_iron_total})")
 
     # =====================================================================
     # --- Post-Processing: "Zero Oxygen" Safety Check ---

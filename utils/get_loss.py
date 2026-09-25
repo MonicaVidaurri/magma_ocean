@@ -1,16 +1,13 @@
 import numpy as np
 
 def get_loss(
-        t_flux_years,
-        Lbol_relative,
         t_sec,
+        luminosity_bol,
         pressure_O2,
         pressure_H2O,
-        t_sat_years,
         semi_major_axis,
         mass_planet,
         radius_planet,
-        stellar_luminosity,
         temp_surface,
         params):
     """
@@ -18,30 +15,27 @@ def get_loss(
     and Oxygen, assuming a water-dominated upper atmosphere.
 
     Uses a diffusion-limited escape model (e.g., Luger & Barnes) where Hydrogen 
-    drags Oxygen with it if the XUV flux is high enough.
+    drags Oxygen with it if the XUV flux is high enough. The fluxes assume water is
+    available; the caller scales them down as the water inventory runs out.
 
     Parameters
     ----------
-    t_flux_years : ndarray
-        Time array corresponding to the stellar evolution tracks [years].
-    Lbol_relative : float or ndarray
-        Stellar bolometric luminosity relative to LSun.
     t_sec : float
-        Current integration time [seconds].
+        Current integration time (stellar age) [seconds].
+    luminosity_bol : float
+        Current stellar bolometric luminosity [W], from the stellar track.
     pressure_O2 : float
         Partial pressure of Oxygen in the atmosphere [Pa].
     pressure_H2O : float
         Partial pressure of Water Vapor in the atmosphere [Pa].
-    t_sat_years : float
-        XUV saturation time for the host star [years].
     semi_major_axis : float
         Semi-major axis of the planet's orbit [m].
     mass_planet : float
         Mass of the planet [kg].
     radius_planet : float
         Radius of the planet [m].
-    stellar_luminosity : float
-        Static stellar bolometric luminosity [W]. Used for equilibrium temperature.
+    temp_surface : float
+        Surface temperature [K]. Only used if simulation.surface_temp_escape is true.
     params : dict
         Main configuration dictionary containing TOML parameters.
 
@@ -52,11 +46,6 @@ def get_loss(
     flux_loss_O : float
         Mass flux of oxygen escaping to space [kg/m^2/s].
     """
-
-    # --- Exhaustion Check ---
-    # If there is no water left in the atmosphere, hydrodynamic escape of H shuts off.
-    if pressure_H2O < 1e-6:
-        return 0.0, 0.0
 
     # --- Unpack Parameters ---
     c        = params['constants']
@@ -88,7 +77,7 @@ def get_loss(
     albedo  = p['albedo']
     
     # Equilibrium Temperature (Escape Region Temperature Proxy)
-    flux_at_planet       = stellar_luminosity / (4.0 * np.pi * semi_major_axis**2)
+    flux_at_planet       = luminosity_bol / (4.0 * np.pi * semi_major_axis**2)
     absorbed_stellar_rad = (1.0 - albedo) * flux_at_planet / 4.0
     temp_eq              = (absorbed_stellar_rad / stefan_boltz)**0.25
 
@@ -102,25 +91,21 @@ def get_loss(
     X_H = esc['source_frac_H']
     X_O = esc['source_frac_O']
 
-    # Fractional XUV luminosity relative to Lbol
-    f_xuv = f_sat * (t_flux_years / t_sat_years)**decay_beta
+    t_sat_years = star_xuv['tsat_years']
 
-    if XUV_model == 1:
+    # Fractional XUV luminosity relative to Lbol at the current age
+    if t_years < t_sat_years:
+        f_xuv = f_sat
+    elif XUV_model == 1:
         # Ribas decay: flat during saturation, power-law decay after
-        f_xuv = np.where(t_flux_years < t_sat_years, f_sat, f_xuv)
+        f_xuv = f_sat * (t_years / t_sat_years)**decay_beta
     elif XUV_model == 2:
         # Step function: flat during saturation, zero after
-        f_xuv = np.where(t_flux_years < t_sat_years, f_sat, 0.0)
-
-    # Convert relative Lbol back to Watts using master solar luminosity
-    luminosity_xuv_watts = f_xuv * Lbol_relative * c['lum_sun']
-    flux_xuv_orbit       = luminosity_xuv_watts / (4.0 * np.pi * semi_major_axis**2)
-
-    # Interpolate to current time using the converted t_years
-    if t_years > t_flux_years[0]:
-        current_Fxuv = np.interp(t_years, t_flux_years, flux_xuv_orbit)
+        f_xuv = 0.0
     else:
-        current_Fxuv = flux_xuv_orbit[0]
+        raise ValueError(f"Unknown planet.atmosphere.escape.xuv_model: {XUV_model}. Use 1 (high) or 2 (low).")
+
+    current_Fxuv = f_xuv * luminosity_bol / (4.0 * np.pi * semi_major_axis**2)
 
     if use_surf_temp_for_escape:
         # --- Expanded Radius / Atmospheric Inflation ---
@@ -195,7 +180,8 @@ def get_loss(
     phi_O_molecules = max(phi_O_molecules, 0.0)
 
     # Critical flux threshold for dragging Oxygen
-    phi_H_critical = (binary_diff_coeff * gravity * X_H * mass_proton) * (molar_mass_O - molar_mass_H) / (boltzmann * temp_escape)
+    phi_H_critical = ((binary_diff_coeff * gravity * X_H * mass_proton) * (molar_mass_O - molar_mass_H)
+                      / (boltzmann * temp_escape))
 
     # --- Convert to Mass Flux (kg/m^2/s) ---
     # Convert from (molecules/m^2/s) -> (moles/m^2/s) -> (g/m^2/s) -> (kg/m^2/s)

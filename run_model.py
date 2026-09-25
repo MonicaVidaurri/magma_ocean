@@ -1,538 +1,337 @@
+"""
+Run the magma ocean model for one planet configuration.
+
+Command line::
+
+    python run_model.py trappist1e.toml
+    python run_model.py trappist1e.toml --tides on --end-time 1e8 --output-dir output/test
+    python run_model.py trappist1e.toml --set planet.orbit.initial_eccentricity=0.05 --no-plot
+
+From Python::
+
+    from run_model import run
+    results = run('trappist1e.toml', overrides={'simulation.tides_on': True}, output_dir='output/test')
+"""
+import argparse
+import hashlib
+import json
 import sys
+import time
+import tomllib
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from functools import partial
-import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
 from tqdm import tqdm
-from scipy.optimize import root_scalar
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
 
-from scipy.integrate import solve_ivp as scisolve_ivp
-try:
-    from CyRK import pysolve_ivp
-    USE_CYRK = True
-except ImportError:
-    USE_CYRK = False
+REPO_ROOT = Path(__file__).resolve().parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-USE_CYRK = False  # Override and only use scipy for now
-if USE_CYRK:
-    solve_ivp = pysolve_ivp
-else:
-    solve_ivp = scisolve_ivp
-
-from types import SimpleNamespace
-from ODEs.combined_ode import moODE_magma_ocean, moODE_solid, moODE_dry_solid, make_phase_events
-from utils.postprocess import postprocess_magma_ocean
-from utils.get_comp import get_comp
-from utils.general_utils import merge_dicts
+from ODEs.combined_ode import MagmaOceanModel
+from utils.config import load_config
+from utils.logger import get_logger, setup_logging
 from utils.nondim_scales import StateScaler
-from utils.mantle_grid import build_mantle_grid
-from utils.get_melt_fractions import get_melt_fractions
-from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
+from utils.plotting import plot_run
+from utils.postprocess import postprocess_magma_ocean
 
-# =====================================================================
-# --- INITIALIZATION & TOML UNPACKING ---
-# =====================================================================
-with open("baseline_config.toml", "rb") as f:
-    params = tomllib.load(f)
+log = get_logger('run_model')
 
-simulation_config = 'proximab.toml'
-with open(simulation_config, "rb") as f:
-    specific_params = tomllib.load(f)
 
-params = merge_dicts(specific_params, params)
-simulation_version = params['simulation']['version']
-save_name = f'{simulation_config}_{simulation_version}'
+# ======================================================================================================================
+# Integration
+# ======================================================================================================================
+def absolute_tolerances(model, scaler):
+    """
+    Per-component absolute tolerances in scaled units.
 
-constants         = params['constants']
-star_params       = params['star']
-planet_params     = params['planet']
-orbit_params      = params['planet']['orbit']
-simulation_params = params['simulation']
-thermo_params     = params['planet']['thermodynamics']
-comp_params       = params['planet']['oxide_composition']
+    Every component uses ``simulation.atol`` except the fluid water, whose tolerance must resolve the escape taper
+    (W_taper, the water column of ``taper_pressure``). A coarser tolerance lets the solver step back and forth across
+    the taper's linear zone once the water is gone, which stalls the integration.
+    """
+    params    = model.params
+    tolerance = np.full(scaler.y_scales.size, params['simulation']['atol'], dtype=np.float64)
+    water_taper = (params['planet']['atmosphere']['escape']['taper_pressure'] * model.planet.surface_area
+                   / model.planet.gravity)
+    tolerance[6] = min(tolerance[6], 0.1 * water_taper / scaler.y_scales[6])
+    return tolerance
 
-integration_method = simulation_params['method']
-integration_rtol   = simulation_params['rtol']
-integration_atol   = simulation_params['atol']
-# integration_rtol = np.array([
-#     1e-4,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
-#     1e-4,   # 1: Eccentricity
-#     1e-4,   # 2: Star Spin Rate 
-#     1e-4,   # 3: Planet Spin Rate 
-#     1e-3,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
-#     1e-7,   # 5: Solid Radius (Allows the phase boundary to step faster)
-#     1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
-#     1e-6,   # 7: Mass Water MO/Atm 
-#     1e-6,   # 8: Mass Oxygen MO/Atm 
-#     1e-6,   # 9: Mass Oxygen Solid
-#     1e-3    # 10: Surface Temp 
-# ], dtype=np.float64)
-# integration_atol = np.array([
-#     1e-6,   # 0: Semi-major axis (Needs extremely tight relative precision for long-term orbit)
-#     1e-5,   # 1: Eccentricity
-#     1e-6,   # 2: Star Spin Rate 
-#     1e-6,   # 3: Planet Spin Rate 
-#     1e-8,   # 4: Mantle Temp (5 significant figures is plenty for bulk thermodynamics)
-#     1e-6,   # 5: Solid Radius (Allows the phase boundary to step faster)
-#     1e-6,   # 6: Mass Water Solid (Slightly tighter to preserve strict mass conservation)
-#     1e-6,   # 7: Mass Water MO/Atm 
-#     1e-6,   # 8: Mass Oxygen MO/Atm 
-#     1e-6,   # 9: Mass Oxygen Solid
-#     1e-6    # 10: Surface Temp 
-# ], dtype=np.float64)
 
-start_time_sec     = simulation_params['start_time_years'] * constants['seconds_per_year']
-end_time_sec       = simulation_params['end_time_years'] * constants['seconds_per_year']
-tides_on_flag      = simulation_params['tides_on']
+def finite_difference_jacobian(rhs, atol):
+    """
+    Forward-difference Jacobian with a bounded step, for the implicit solvers.
 
-MStar = star_params['mass_star_relative'] * constants['mass_sun']
-LStar = star_params['lum_star_relative'] * constants['lum_sun']
-host_radius = star_params['host_radius']
-tsat_sec    = star_params['xuv']['tsat_years'] * constants['seconds_per_year']
-stellar = pd.read_csv('data/stellar_dataProxCen.txt', sep='	')
-olr_data = np.load('data/OLRdatab.npz')
-Temp_K, P_Pa, OLR = olr_data['Temp_K'], olr_data['P_Pa'], olr_data['OLR']
-Ts, Ps = np.meshgrid(Temp_K, P_Pa)
-t_flux, Lbol = stellar['tbol'].values, stellar['Lbol'].values
+    scipy's default estimator (`num_jac`) grows a column's step tenfold whenever the column's effect looks negligible,
+    with no upper limit. The solid inventories affect the rates only weakly, so over a long run their steps overflowed
+    and the solver passed an infinite state to the right-hand side. Here each step is sqrt(machine epsilon) times the
+    larger of the component's magnitude and its absolute tolerance.
 
-Rp = planet_params['radius_planet_relative'] * constants['radius_earth']
-Rc = planet_params['radius_core_relative'] * Rp
-Mp = planet_params['mass_planet_relative'] * constants['mass_earth']
-Mmantle = (1.0 - planet_params['core_mass_fraction']) * Mp
-rho_mantle = Mmantle / ((4.0 / 3.0) * np.pi * (Rp**3 - Rc**3))
-gp = constants['G'] * Mp / Rp**2
-params['_grid'] = build_mantle_grid(Rp, Rc, gp, Mmantle, params)
+    Parameters
+    ----------
+    rhs : callable
+        ``rhs(t, y)`` in the solver's (scaled) units.
+    atol : ndarray
+        Per-component absolute tolerances (scaled units); they set the smallest step.
 
-initial_semi_major_axis = orbit_params['initial_semi_major_axis'] * constants['au']
-Fstel = LStar / (4.0 * np.pi * initial_semi_major_axis**2)
-ASR = (1.0 - planet_params['albedo']) * Fstel / 4.0
-Teq = ((1.0 - planet_params['albedo']) * Fstel / 4.0 / constants['stefan_boltzmann']) ** 0.25
+    Returns
+    -------
+    callable
+        ``jacobian(t, y) -> ndarray, shape (n, n)``.
+    """
+    relative_step = np.sqrt(np.finfo(np.float64).eps)
+    step_floor = np.asarray(atol, dtype=np.float64)
 
-MH2O = planet_params['ocean_mass_multiplier'] * constants['mass_ocean_earth']
-FH2O = MH2O / Mmantle
-FeOt = comp_params['mass_frac_FeO_total']
-Fe3_Fet = comp_params['ratio_Fe3_to_total_Fe']
-Xi = get_comp(params) 
+    def jacobian(t, y):
+        rates = rhs(t, y)
+        matrix = np.empty((y.size, y.size), dtype=np.float64)
+        for column in range(y.size):
+            perturbed = y.copy()
+            perturbed[column] += relative_step * max(abs(y[column]), step_floor[column])
+            step = perturbed[column] - y[column]  # The step actually taken after rounding
+            matrix[:, column] = (rhs(t, perturbed) - rates) / step
+        return matrix
 
-Tsol1 = thermo_params['solidus_slope_low_p'] * 1e-9 
-Tsol2 = thermo_params['solidus_intercept_low_p']
-Cp = thermo_params['specific_heat_mantle']
-alpha_therm = thermo_params['thermal_expansion']
-muO, muFeO1_5 = constants['molar_mass_O'], comp_params['molar_mass_FeO1_5']
+    return jacobian
 
-# =====================================================================
-# --- INITIAL CONDITIONS ---
-# =====================================================================
-Tr0 = np.zeros(11, dtype=np.float64)
-Tr0[0] = initial_semi_major_axis
-Tr0[1] = orbit_params['initial_eccentricity']
-Tr0[2] = 2.0 * np.pi / (86400.0 * star_params['spin_days'])
-Tr0[3] = planet_params['initial_spin_multiplier'] * semi_a2orbital_motion(initial_semi_major_axis, MStar, Mp)
-Tr0[4] = planet_params['initial_mantle_temp']
 
-# Find initial magma ocean depth based on temperature.
-max_mantle_depth = Rp - Rc
-def temp_difference(z):
-    """ Finds the exact intersection of the adiabat and piecewise solidus. """
-    T_ad = Tr0[4] + Tr0[4] * (alpha_therm * gp * z / Cp)
-    P_gpa = (rho_mantle * gp * z) / 1e9
-    
-    T_sol_low = thermo_params['solidus_slope_low_p'] * P_gpa + thermo_params['solidus_intercept_low_p']
-    T_sol_high = thermo_params['solidus_slope_high_p'] * P_gpa + thermo_params['solidus_intercept_high_p']
-    T_sol = min(T_sol_low, T_sol_high)
-    
-    return T_ad - T_sol
+def integrate(model, show_progress=True):
+    """
+    Integrate the model from the configured start to end time.
 
-try:
-    res = root_scalar(temp_difference, bracket=[0.0, Rp - Rc], method='brentq')
-    base_depth = res.root
-except ValueError:
-    # If the bracket fails, the mantle is hotter than the solidus at the CMB
-    base_depth = Rp - Rc
-# Original method:
-# base_depth = (Tr0[4] - Tsol2) * Cp / (Tsol1 * rho_mantle * gp * Cp - alpha_therm * gp * Tr0[4])
-# base_depth = min(base_depth, 900.0e3) 
-Tr0[5] = max(Rp - base_depth, Rc)
-print(f"Initial Magma Ocean Depth {base_depth/1e3:0.2f} km.")
+    Parameters
+    ----------
+    model : MagmaOceanModel
+    show_progress : bool, optional
+        Show a tqdm progress bar in simulated years.
 
-Mmo0 = (4.0 / 3.0) * np.pi * rho_mantle * (Rp**3 - Tr0[5]**3)
+    Returns
+    -------
+    t_sec : ndarray
+        Accepted solver times (s).
+    states : ndarray, shape (num_states, n)
+        States at those times (SI units).
+    success : bool
+    message : str
+    """
+    params         = model.params
+    sim            = params['simulation']
+    seconds_per_yr = params['constants']['seconds_per_year']
+    start_sec      = sim['start_time_years'] * seconds_per_yr
+    end_sec        = sim['end_time_years'] * seconds_per_yr
 
-Tr0[6] = MH2O - FH2O * Mmo0
-Tr0[7] = FH2O * Mmo0 
-muFeO = comp_params['molar_mass_FeO']
-Tr0[8] = FeOt * Fe3_Fet * Mmo0 * (muO / 2.0 / muFeO)
-Tr0[9] = FeOt * Fe3_Fet * (Mmantle - Mmo0) * (muO / 2.0 / muFeO)
-Tr0[10] = Tr0[4] - 1.0
+    initial_state = model.initial_state()
+    # Volatile reservoirs are scaled by the initial water; a dry planet falls back to one Earth ocean so the scaling
+    # (and the absolute tolerance it implies) stays finite.
+    volatile_scale = model.planet.mass_water_initial or params['constants']['mass_ocean_earth']
+    scaler         = StateScaler(a0=initial_state[0], M_ocean=volatile_scale)
+    scaled_rhs     = scaler.wrap_ode(model.rhs)
 
-# =====================================================================
-# --- INTEGRATION ---
-# =====================================================================
-CRASH_IF_SOL_FAILS = False
-def monitor_ode(fun, t_span, y0, scaler=None, events=None, **kwargs):
-    """ Wraps solve_ivp with dimensional translation and a progress bar. """
-    
-    if scaler:
-        # Scale initial conditions and time into Dimensionless Space
-        t_span_calc = (scaler.scale_time(t_span[0]), scaler.scale_time(t_span[1]))
-        y0_calc = scaler.scale_state(y0)
-        wrapped_fun = scaler.wrap_ode(fun)
-        wrapped_events = [scaler.wrap_event(e) for e in events] if events else None
+    total_years = (end_sec - start_sec) / seconds_per_yr
+    with tqdm(total=total_years, unit='yr', desc='Simulating', unit_scale=True, disable=not show_progress) as pbar:
+        def tracked_rhs(t_scaled, y_scaled):
+            # Set the bar position directly (summing increments drifts past the total in floating point). Trial steps
+            # can probe past the end time; the bar stops there.
+            elapsed_years = (min(scaler.unscale_time(t_scaled), end_sec) - start_sec) / seconds_per_yr
+            if elapsed_years > pbar.n:
+                pbar.n = elapsed_years
+                pbar.update(0)
+            return scaled_rhs(t_scaled, y_scaled)
+
+        atol = absolute_tolerances(model, scaler)
+        implicit = sim['method'] in ('BDF', 'Radau', 'LSODA')
+        solution = solve_ivp(
+            tracked_rhs, (scaler.scale_time(start_sec), scaler.scale_time(end_sec)),
+            scaler.scale_state(initial_state), method=sim['method'], rtol=sim['rtol'], atol=atol,
+            **({'jac': finite_difference_jacobian(scaled_rhs, atol)} if implicit else {}))
+
+    t_sec  = scaler.unscale_time(solution.t)
+    states = scaler.unscale_state(solution.y)
+    if solution.success:
+        log.info(f"Integration finished at {t_sec[-1] / seconds_per_yr:0.3e} yr ({solution.t.size} steps).")
     else:
-        t_span_calc = t_span
-        y0_calc = y0
-        wrapped_fun = fun
-        wrapped_events = events
-
-    # Setup progress bar
-    t0, tf = t_span
-    total_years = (tf - t0) / constants['seconds_per_year']
-    
-    with tqdm(total=total_years, unit="yr", desc="Simulating", unit_scale=True) as pbar:
-        state = {'last_t_sec': t0}
-
-        def track_progress(t_calc, y_calc):
-            # Calculate dimensional time purely for the progress bar
-            t_sec = scaler.unscale_time(t_calc) if scaler else t_calc
-            dt = t_sec - state['last_t_sec']
-            if dt > 0:
-                pbar.update(dt / constants['seconds_per_year'])
-                state['last_t_sec'] = t_sec
-            return wrapped_fun(t_calc, y_calc)
-
-        # Execute Solver
-        sol = solve_ivp(track_progress, t_span_calc, y0_calc, events=wrapped_events, **kwargs)
-        
-        t_final_sec = scaler.unscale_time(sol.t[-1]) if scaler else sol.t[-1]
-        if sol.status == 0 and t_final_sec >= tf:
-            pbar.n = pbar.total
-            pbar.refresh()
-
-    if not sol.success and CRASH_IF_SOL_FAILS:
-        t_fail = scaler.unscale_time(sol.t[-1]) if scaler else sol.t[-1]
-        raise Exception(f"Integration failed at t={t_fail}: {sol.message}.")
-    
-    # Re-dimensionalize the solution object before returning it to the user
-    if scaler:
-        sol.t = scaler.unscale_time(sol.t)
-        for i in range(len(sol.y)):
-            sol.y[i, :] = sol.y[i, :] * scaler.y_scales[i]
-            
-        if sol.t_events:
-            sol.t_events = [scaler.unscale_time(te) if te is not None else te for te in sol.t_events]
-        if sol.y_events:
-            for ev_idx in range(len(sol.y_events)):
-                if sol.y_events[ev_idx] is not None and len(sol.y_events[ev_idx]) > 0:
-                    for i in range(len(sol.y_events[ev_idx][0])):
-                        sol.y_events[ev_idx][:, i] = sol.y_events[ev_idx][:, i] * scaler.y_scales[i]
-
-    return sol
-
-# Frozen keyword args shared by both phase ODEs (identical signatures)
-_frozen = dict(
-    Rp=Rp, Rc=Rc, Mmantle=Mmantle, Teq=Teq, rho_mantle=rho_mantle, g=gp,
-    Ts=Ts, Ps=Ps, OLR=OLR, ASR=ASR, t_flux=t_flux, Lbol=Lbol, Xi=Xi, FeOt=FeOt,
-    Temp_K=Temp_K, P_Pa=P_Pa, tsat=tsat_sec, Mp=Mp, LStar=LStar, Rh=host_radius,
-    Mh=MStar, params=params, tides_on_flag=tides_on_flag
-)
-mo_ode    = partial(moODE_magma_ocean, **_frozen)
-solid_ode = partial(moODE_solid,       **_frozen)
-dry_ode   = partial(moODE_dry_solid,   **_frozen)
-
-event_mo_ends, event_mo_starts, event_solid_dries = make_phase_events(params, Mmantle)
-
-scaler = StateScaler(a0=initial_semi_major_axis, Rp=Rp, M_ocean=MH2O)
-
-# Determine which phase we start in
-mf_threshold  = params['planet']['convection']['melt_fraction_threshold']
-dry_threshold = params['planet']['thermodynamics'].get('dry_solid_threshold', 1e-9)
-_, meltfrac_init, _ = get_melt_fractions(Tr0[4], params['_grid'])
-if meltfrac_init >= mf_threshold:
-    phase = 'mo'
-elif Tr0[6] / Mmantle < dry_threshold:
-    phase = 'dry_solid'
-else:
-    phase = 'wet_solid'
-print(f"Starting phase: {phase} (meltfrac_bulk = {meltfrac_init:.3f})")
-
-# =====================================================================
-# --- PHASE-CHAINING INTEGRATION LOOP ---
-# =====================================================================
-# Each solver segment handles exactly one phase (MO or solid).  A terminal
-# event flips the phase flag and the loop restarts.  This lets each solver
-# work on a continuous, smooth problem and naturally handles freeze-remelt.
-
-_PHASE_LABELS = {'mo': 'Magma Ocean', 'wet_solid': 'Wet Solid', 'dry_solid': 'Dry Solid'}
-
-MAX_PHASES = 20
-events_encountered = dict()
-t_list     = []
-y_list     = []
-current_y  = Tr0
-t_current  = start_time_sec
-run_success = True
-
-total_years = (end_time_sec - start_time_sec) / constants['seconds_per_year']
-
-for _phase_idx in range(MAX_PHASES):
-    print(f"Working on phase {_phase_idx}:: {_PHASE_LABELS[phase]}")
-
-    
-    if t_current >= end_time_sec:
-        break
-    elif t_current != start_time_sec:
-        events_encountered[t_current / constants['seconds_per_year']] = phase
-
-    if phase == 'mo':
-        ode_fun      = mo_ode
-        phase_events = [event_mo_ends]
-    elif phase == 'wet_solid':
-        ode_fun      = solid_ode
-        phase_events  = [event_mo_starts, event_solid_dries]
-    else:  # 'dry_solid'
-        ode_fun      = dry_ode
-        phase_events = [event_mo_starts]
-
-    segment = monitor_ode(
-        ode_fun, (t_current, end_time_sec), current_y,
-        scaler=scaler, events=phase_events,
-        method=integration_method,
-        rtol=integration_rtol,
-        atol=integration_atol,
-    )
-
-    if not segment.success:
-        print(f"\nIntegration failed at "
-              f"t = {segment.t[-1] / constants['seconds_per_year']:.3e} yr: {segment.message}")
-        run_success = False
-        break
-
-    t_current = segment.t[-1]
-    current_y = segment.y[:, -1]
-    t_list.append(segment.t)
-    y_list.append(segment.y)
-
-    prev_phase = phase
-    if phase == 'mo':
-        # After MO freezes out, check whether the solid mantle is still wet.
-        # If dry_solid was reached before this MO episode, atmospheric water may
-        # be depleted and solid water will be negligible — go straight to dry_solid
-        # rather than wet_solid to avoid an unphysical wet-solid re-entry.
-        if current_y[6] / Mmantle >= dry_threshold:
-            phase = 'wet_solid'
-        else:
-            phase = 'dry_solid'
-    elif phase == 'wet_solid':
-        # t_events[0] = event_mo_starts, t_events[1] = event_solid_dries
-        phase = 'mo' if len(segment.t_events[0]) > 0 else 'dry_solid'
-    else:  # 'dry_solid'
-        phase = 'mo'
-
-    print(f"\n Completed Phase {_phase_idx}:: '{_PHASE_LABELS[prev_phase]}' "
-          f"at t = {t_current / constants['seconds_per_year']:.3e} yr  →  {_PHASE_LABELS[phase]}")
-
-# Concatenate all segments into a single solution-like object
-t_all = np.concatenate(t_list)
-y_all = np.concatenate(y_list, axis=1)
-sol   = SimpleNamespace(
-    t       = t_all,
-    y       = y_all,
-    success = run_success,
-    message = f"Phase-chained integration ({len(t_list)} segment(s)).",
-)
-
-print("\nSimulation Complete:")
-print(f"\t Success  = {sol.success}.")
-print(f"\t Message  = {sol.message}.")
-print(f"\t End time = {sol.t[-1] / constants['seconds_per_year']:0.3e} Years.")
-
-# =====================================================================
-# --- POST-PROCESSING ---
-# =====================================================================
-results = postprocess_magma_ocean(sol, Rp, Rc, Mmantle, gp, OLR, ASR,
-                                  Teq, Xi, FeOt, t_flux, Lbol, tsat_sec, initial_semi_major_axis, Mp, LStar, params)
-
-t_tot_years = results['t'] / constants['seconds_per_year']
+        log.error(f"Integration failed at {t_sec[-1] / seconds_per_yr:0.3e} yr: {solution.message}")
+    return t_sec, states, bool(solution.success), str(solution.message)
 
 
-orb_freq_array = np.empty_like(results['Tr'][0,:])
-for i, a_ in enumerate(results['Tr'][0,:]):
-    orb_freq_array[i] = semi_a2orbital_motion(a_, MStar, Mp)
+# ======================================================================================================================
+# Output
+# ======================================================================================================================
+LABELED_KEYS = ('simulation.tides_on', 'simulation.end_time_years', 'planet.orbit.initial_eccentricity',
+                'planet.initial_spin_multiplier')
 
-# ---------------------------------------------------------------------------
-# Shared state-vector layout (same for both phase ODEs)
-#   [0]  semi_major_axis   [1]  eccentricity
-#   [2]  spin_freq_host    [3]  spin_freq_planet
-#   [4]  temp_mantle       [5]  radius_solid
-#   [6]  mass_water_solid  [7]  mass_water_atm
-#   [8]  mass_oxygen_atm   [9]  mass_O2_solid
-#   [10] temp_surface
-# ---------------------------------------------------------------------------
 
-# Saving results can be slow and take up disk space. If doing quick adjustments turn off saving.
-SAVE_DATA = True
+def run_label(params):
+    """
+    File-name label built from the parameters that define a run.
 
-if SAVE_DATA:
-    df_results = pd.DataFrame({
-        'time_yr': t_tot_years,
-        'semi_major_axis': results['Tr'][0,:] / constants['au'],
-        'orbital_freq': orb_freq_array,
-        'eccentricity': results['Tr'][1,:],
-        'spin_ratio_host': results['Tr'][2,:] / orb_freq_array,
-        'spin_ratio_planet': results['Tr'][3,:] / orb_freq_array,
-        'temp_mantle': results['Tr'][4,:],
-        'radius_solid': results['Tr'][5,:] / 1e3,
-        'mass_water_solid': results['Tr'][6,:] / MH2O,
-        'mass_water_atm': results['Tr'][7,:] / MH2O,
-        'mass_oxygen_atm': results['Tr'][8,:] / MH2O,
-        'mass_O2_solid': results['Tr'][9,:] / MH2O,
-        'temp_surface': results['Tr'][10,:],
+    Overrides other than those spelled out in the label add a short digest, so runs with different overrides do not
+    overwrite each other's files.
+    """
+    sim   = params['simulation']
+    orbit = params['planet']['orbit']
+    tides = 'on' if sim['tides_on'] else 'off'
+    label = (f"{params['_meta']['config_name']}_v{sim['version']}_tides{tides}"
+             f"_e{orbit['initial_eccentricity']:.4g}_sp{params['planet']['initial_spin_multiplier']:.4g}"
+             f"_t{sim['end_time_years']:.0e}")
+    other = {key: value for key, value in params['_meta']['overrides'].items() if key not in LABELED_KEYS}
+    if other:
+        digest = hashlib.sha1(json.dumps(other, sort_keys=True, default=str).encode()).hexdigest()[:8]
+        label += f'_o{digest}'
+    return label
+
+
+def results_table(results, params, water_scale):
+    """
+    Output table. The first columns keep the names and units of the pre-2026-09 output so older plotting scripts
+    (auto_plot.py, auto_plot_v2.py) still work; new columns follow.
+    """
+    constants = params['constants']
+    orbital_freq = results['orbital_freq']
+    return pd.DataFrame({
+        'time_yr': results['t'] / constants['seconds_per_year'],
+        'semi_major_axis': results['semi_major_axis'] / constants['au'],
+        'orbital_freq': orbital_freq,
+        'eccentricity': results['eccentricity'],
+        'spin_ratio_host': results['spin_freq_host'] / orbital_freq,
+        'spin_ratio_planet': results['spin_freq_planet'] / orbital_freq,
+        'temp_mantle': results['temp_mantle'],
+        'radius_solid': results['radius_solid'] / 1e3,
+        'mass_water_solid': results['mass_water_solid'] / water_scale,
+        'mass_water_atm': results['mass_water_fluid'] / water_scale,
+        'mass_oxygen_atm': results['mass_oxygen_fluid'] / water_scale,
+        'mass_O2_solid': results['mass_oxygen_solid'] / water_scale,
+        'temp_surface': results['temp_surface'],
         'PO2': results['PO2'],
         'Patm': results['Patm'],
-        'tidal_shear': results['tidal_shear']/1e9,
+        'tidal_shear': results['tidal_shear'] / 1e9,
         'tidal_visc': results['tidal_visc'],
         'tidal_scale': results['tidal_scale'] * 100,
         'Q_tid': results['Q_tid'],
         'Q_rad': results['Q_rad'],
-        'meltfrac': results['meltfrac'] * 100
+        'meltfrac': results['meltfrac'] * 100,
+        # --- Added 2026-09 ---
+        'Q_surface': results['Q_surface'],
+        'temp_equilibrium': results['temp_equilibrium'],
+        'radius_rheological': results['radius_rheological'] / 1e3,
+        'meltfrac_surface': results['meltfrac_surface'] * 100,
+        'meltfrac_melt_region': results['meltfrac_melt_region'] * 100,
+        'meltfrac_solid_layer': results['meltfrac_solid_layer'] * 100,
+        'mass_water_dissolved': results['mass_water_dissolved'] / water_scale,
+        'mass_water_vapor': results['mass_water_vapor'] / water_scale,
+        'mass_water_ocean': results['mass_water_ocean'] / water_scale,
+        'degassing_rate': results['degassing_rate'],
+        'water_loss_rate': results['water_loss_rate'],
     })
-    df_results.to_csv(f'{save_name}_output_tm1e+09_ec0.2_sp10.0.txt', sep=',',index=False)
 
-def plot_magma_ocean():
-    Q_tidal = results['Q_tid']
-    Q_radiogenic = results['Q_rad']
-    Q_tidal[Q_tidal == 0.0] = np.nan
-    Q_radiogenic[Q_radiogenic == 0.0] = np.nan
 
-    def add_event_lines(axis):
-        phase_ls = {
-            'mo': '--',
-            'wet_solid': ':',
-            'dry_solid': '-.'
-        }
-        for phase_time, phase_type in events_encountered.items():
-            axis.axvline(x=phase_time, ls=phase_ls[phase_type], c='k')
+# ======================================================================================================================
+# Public Entry Point
+# ======================================================================================================================
+def run(config_path, overrides=None, output_dir='output', save=True, plot=True, show_progress=True, log_file=None,
+        log_level='INFO'):
+    """
+    Build, integrate, and post-process one model run.
 
-    # Temperature Plot
-    fig_tmp, ax_tmp = plt.subplots(figsize=(8, 5))
-    ax_tmp.plot(t_tot_years, results['Tr'][4,:], label='Mantle T', color='black')
-    ax_tmp.plot(t_tot_years, results['Tr'][10,:], label='Surface T', color='orange')
-    ax_tmp.set_xlabel('Time [yr]')
-    ax_tmp.set_ylabel('Temperature [K]')
-    ax_tmp.set_title('Mantle and Surface Temperature Evolution')
-    ax_tmp.set_xscale('log')
-    add_event_lines(ax_tmp)
-    
-    ax_heat = ax_tmp.twinx()
-    ax_heat.plot(t_tot_years, Q_tidal/1e12, label='Tidal', color='red')
-    ax_heat.plot(t_tot_years, Q_radiogenic/1e12, label='Radiogenic', color='green')
-    ax_heat.set_yscale('log')
-    ax_heat.set_ylabel('Heating [TW]')
-    ax_heat.legend(loc='center right')
-    ax_tmp.legend(loc='center left')
-    ax_tmp.grid(True)
-    fig_tmp.tight_layout()
-    fig_tmp.savefig(f"{save_name}_temperature_heat.png")
+    Parameters
+    ----------
+    config_path : str or path-like
+        Planet TOML (merged on top of baseline_config.toml).
+    overrides : dict, optional
+        ``{dotted_key: value}`` configuration overrides, e.g. ``{'simulation.tides_on': True}``.
+    output_dir : str or path-like, optional
+        Directory for the output table, summary, and figures.
+    save : bool, optional
+        Write the tab-delimited output table and the JSON summary.
+    plot : bool, optional
+        Write the standard figures.
+    show_progress : bool, optional
+        Show a progress bar.
+    log_file : str or path-like, optional
+        Also write log messages to this file.
+    log_level : str, optional
+        Logging level.
 
-    # Atmosphere Plot
-    fig_atm, ax_atm = plt.subplots(figsize=(8, 5))
-    ax_atm.plot(t_tot_years, results['PO2'], label='$P_{O2}$', color='blue')
-    ax_atm.plot(t_tot_years, results['Patm'], label='$P_{H2O}$', color='black')
-    ax_atm.set_xlabel('Time [yr]')
-    ax_atm.set_ylabel('Pressure [Pa]')
-    ax_atm.set_title('O2 and H2O Atm. Evolution')
-    ax_atm.set_xscale('log')
-    ax_atm.set_yscale('log')
-    add_event_lines(ax_atm)
-    ax_atm.legend()
-    ax_atm.grid(True)
-    fig_atm.tight_layout()
-    fig_atm.savefig(f"{save_name}_atmosphere.png")
+    Returns
+    -------
+    results : dict
+        Post-processed results (see `utils.postprocess.postprocess_magma_ocean`) plus ``'success'``, ``'message'``,
+        ``'label'``, ``'params'``, and ``'output_paths'``.
+    """
+    setup_logging(level=log_level, log_file=log_file)
+    params = load_config(config_path, overrides=overrides)
+    label  = run_label(params)
+    log.info(f"Run '{label}' (config {params['_meta']['config_path']}).")
 
-    # Orbit Plot
-    fig_orb, ax_orb = plt.subplots(figsize=(8, 5))
-    ax2_orb = ax_orb.twinx()
-    ax_orb.plot(t_tot_years, results['Tr'][0,:] / constants['au'], color='red') 
-    ax2_orb.plot(t_tot_years, results['Tr'][1,:], label='Eccentricity', color='blue')
-    ax_orb.set_xlabel('Time [yr]')
-    ax_orb.set_ylabel('Semi Major Axis [Au]', color='red')
-    ax2_orb.set_ylabel('Eccentricity', color='blue')
-    ax_orb.spines['left'].set_color('red')
-    ax2_orb.spines['right'].set_color('blue')
-    ax_orb.set_title('Orbital Evolution')
-    ax_orb.set_xscale('log')
-    add_event_lines(ax_orb)
-    ax_orb.grid(True)
-    ax_orb.tick_params(axis='y', colors='red')
-    ax2_orb.tick_params(axis='y', colors='blue')
-    fig_orb.tight_layout()
-    fig_orb.savefig(f"{save_name}_orbit.png")
+    wall_start = time.perf_counter()
+    model = MagmaOceanModel(params)
+    t_sec, states, success, message = integrate(model, show_progress=show_progress)
+    results = postprocess_magma_ocean(model, t_sec, states)
+    results.update(success=success, message=message, label=label, params=params, output_paths=[])
+    results['summary'].update(success=success, message=message, label=label,
+                              wall_time_s=time.perf_counter() - wall_start)
 
-    # Spin Plot
-    spin_host_frac = (results['Tr'][2,:]/orb_freq_array)
-    spin_planet_frac = (results['Tr'][3,:]/orb_freq_array)
-    fig_spin, ax_spin = plt.subplots(figsize=(8, 5))
-    ax_spin.plot(t_tot_years, spin_planet_frac, color='blue', label='Planet')
-    ax_spin.plot(t_tot_years, spin_host_frac, color='red', label='Star')
-    ax_spin.set_xlabel('Time [yr]')
-    ax_spin.set_ylabel('Spin / Orbital Motion')
-    ax_spin.set_title('Spin Evolution')
-    ax_spin.set_xscale('log')
-    ax_spin.set_yscale('linear')
-    add_event_lines(ax_orb)
-    ax_spin.grid(True)
-    ax_spin.legend()
-    fig_spin.tight_layout()
-    fig_spin.savefig(f"{save_name}_spin.png")
+    water_scale = model.planet.mass_water_initial
+    if save or plot:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        prefix = output_dir / label
+    if save:
+        table_path = f'{prefix}_output.txt'
+        results_table(results, params, water_scale).to_csv(table_path, sep='\t', index=False)
+        summary_path = f'{prefix}_summary.json'
+        with open(summary_path, 'w', encoding='utf-8') as summary_file:
+            json.dump({'summary': results['summary'], 'meta': params['_meta']}, summary_file, indent=2)
+        results['output_paths'] += [table_path, summary_path]
+    if plot:
+        results['output_paths'] += plot_run(results, str(prefix), water_scale)
 
-    # Tidal Susceptibility Plot
-    fig_susp, ax_susp = plt.subplots(figsize=(11, 6)) 
-    # Left=0.25 leaves 25% space on the left. Right=0.75 leaves 25% space on the right.
-    fig_susp.subplots_adjust(left=0.2, right=0.8) 
-    ax_susp.plot(t_tot_years, results['tidal_shear']/1e9, color='red')
-    ax_susp.set_xlabel('Time [yr]')
-    ax_susp.set_ylabel('Shear Modulus [GPa]', color='red')
-    ax_susp.set_yscale('linear')
-    ax_susp.set_xscale('log')
-    ax_susp.tick_params(axis='y', labelcolor='red')
-    ax_susp.spines['left'].set_color('red')
-    ax_susp.grid(True)
-    ax_visc = ax_susp.twinx()
-    ax_visc.spines['left'].set_position(('axes', -0.15)) # Move outward by 20%
-    ax_visc.spines['left'].set_visible(True)
-    ax_visc.spines['right'].set_visible(False)
-    ax_visc.yaxis.set_label_position('left')
-    ax_visc.yaxis.set_ticks_position('left')
-    ax_visc.plot(t_tot_years, results['tidal_visc'], color='blue')
-    ax_visc.set_ylabel('Viscosity', color='blue')
-    ax_visc.set_yscale('log')
-    ax_visc.tick_params(axis='y', labelcolor='blue')
-    ax_visc.spines['left'].set_color('blue')
-    ax_tidal = ax_susp.twinx()
-    ax_tidal.spines['right'].set_visible(True)
-    ax_tidal.spines['left'].set_visible(False)
-    ax_tidal.plot(t_tot_years, results['tidal_scale'] * 100, color='green')
-    ax_tidal.set_ylabel('Tidal Scale [%]', color='green')
-    ax_tidal.set_yscale('linear')
-    ax_tidal.tick_params(axis='y', labelcolor='green')
-    ax_tidal.spines['right'].set_color('green')
-    ax_mf = ax_susp.twinx() 
-    ax_mf.spines['right'].set_position(('axes', 1.15)) # Move outward by 20%
-    ax_mf.spines['right'].set_visible(True)
-    ax_mf.spines['left'].set_visible(False)
-    ax_mf.plot(t_tot_years, 100 * results['meltfrac'], color='black') 
-    ax_mf.set_ylabel('Solid Mantle Melt Fraction [%]', color='black')
-    ax_mf.set_yscale('linear')
-    ax_mf.tick_params(axis='y', labelcolor='black')
-    ax_mf.spines['right'].set_color('black')
-    
-    ax_susp.set_title('Tidal Susceptibility Evolution')
-    add_event_lines(ax_susp) 
-    fig_susp.savefig(f"{save_name}_tidal_suscept.png")
+    summary = results['summary']
+    log.info(f"Success = {success}. Liquid layer first ends at {summary['time_liquid_layer_first_end_years']:0.3e} "
+             f"yr; final PO2 = {summary['PO2_final_pa']:0.3e} Pa; water lost = "
+             f"{100 * summary['water_lost_fraction_final']:0.1f}%.")
+    return results
 
-    # plt.show()
 
-plot_magma_ocean()
+# ======================================================================================================================
+# Command Line
+# ======================================================================================================================
+def _parse_override(text):
+    """Parse ``key=value`` where value is a TOML literal (numbers, booleans, quoted strings)."""
+    if '=' not in text:
+        raise argparse.ArgumentTypeError(f"Override '{text}' must look like key=value.")
+    key, value_text = text.split('=', 1)
+    try:
+        value = tomllib.loads(f'value = {value_text}')['value']
+    except tomllib.TOMLDecodeError:
+        value = value_text
+    return key.strip(), value
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Run the magma ocean model for one planet configuration.')
+    parser.add_argument('config', help='Planet TOML file (merged on top of baseline_config.toml).')
+    parser.add_argument('--tides', choices=('on', 'off'), help='Override simulation.tides_on.')
+    parser.add_argument('--end-time', type=float, help='Override simulation.end_time_years.')
+    parser.add_argument('--set', dest='overrides', action='append', type=_parse_override, default=[],
+                        metavar='KEY=VALUE', help='Override any configuration value (repeatable).')
+    parser.add_argument('--output-dir', default='output', help='Directory for outputs (default: output).')
+    parser.add_argument('--no-plot', action='store_true', help='Skip figures.')
+    parser.add_argument('--no-save', action='store_true', help='Skip the output table and summary.')
+    parser.add_argument('--log-file', help='Also write the log to this file.')
+    parser.add_argument('--log-level', default='INFO', help='Logging level (default: INFO).')
+    args = parser.parse_args(argv)
+
+    overrides = dict(args.overrides)
+    if args.tides is not None:
+        overrides['simulation.tides_on'] = args.tides == 'on'
+    if args.end_time is not None:
+        overrides['simulation.end_time_years'] = args.end_time
+
+    results = run(args.config, overrides=overrides, output_dir=args.output_dir, save=not args.no_save,
+                  plot=not args.no_plot, log_file=args.log_file, log_level=args.log_level)
+    return 0 if results['success'] else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

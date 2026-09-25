@@ -46,7 +46,7 @@ def time0():
     dfs_all = []
     for file in paths:
         if time0 in file:
-            df1 = pd.read_csv(file, sep=",", skipinitialspace=True)
+            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
             temp_df = pd.DataFrame({"ecc": df1["eccentricity"],"spin": df1["spin_ratio_planet"],"PO2": df1["PO2"]})
             temp_df.dropna(inplace=True)
             dfs_all.append(temp_df)
@@ -91,7 +91,7 @@ def time1():
 
     for file in paths:
         if time1 in file:
-            df1 = pd.read_csv(file, sep=",", skipinitialspace=True)
+            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
             temp_df = pd.DataFrame({"ecc": df1["eccentricity"],"spin": df1["spin_ratio_planet"],"PO2": df1["PO2"]})
             temp_df.dropna(inplace=True)
             dfs_all.append(temp_df)
@@ -136,7 +136,7 @@ def time2():
 
     for file in paths:
         if time2 in file:
-            df1 = pd.read_csv(file, sep=",", skipinitialspace=True)
+            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
             temp_df = pd.DataFrame({"ecc": df1["eccentricity"], "spin": df1["spin_ratio_planet"], "PO2": df1["PO2"]})
             temp_df.dropna(inplace=True)
             dfs_all.append(temp_df)
@@ -181,7 +181,7 @@ def time3():
 
     for file in paths:
         if time3 in file:
-            df1 = pd.read_csv(file, sep=",", skipinitialspace=True)
+            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
             temp_df = pd.DataFrame({"ecc": df1["eccentricity"], "spin": df1["spin_ratio_planet"], "PO2": df1["PO2"]})
             temp_df.dropna(inplace=True)
             dfs_all.append(temp_df)
@@ -226,7 +226,7 @@ def time4():
 
     for file in paths:
         if time4 in file:
-            df1 = pd.read_csv(file, sep=",", skipinitialspace=True)
+            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
             temp_df = pd.DataFrame({"ecc": df1["eccentricity"], "spin": df1["spin_ratio_planet"], "PO2": df1["PO2"]})
             temp_df.dropna(inplace=True)
             dfs_all.append(temp_df)

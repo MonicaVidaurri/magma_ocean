@@ -4,7 +4,7 @@
 [simulation]
 version = "0.8d"  # simulation version just for tracking changes.
 # Primary numerical solver and integration settings
-method = "LSODA"
+method = "BDF"                      # LSODA can fail on the stiff tidal spin lock
 rtol = 3.0e-5
 atol = 1.0e-6
 start_time_years = 1.0
@@ -22,8 +22,9 @@ degas_step_size = 1000.0           # 1km resolution for melt zones
 [star]
 mass_star_relative = 1
 lum_star_relative = 1
-host_radius = 1
+host_radius = 6.957e8               # Solar radius (m)
 spin_days = 25.67                   # Currently favored rotation period
+stellar_track_file = "data/stellar_dataSun.txt"  # BHAC15 1.0 Msun track
 
 [star.xuv]
 # Fractional XUV luminosity (L_xuv / L_bol)

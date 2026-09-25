@@ -102,8 +102,9 @@ def get_massbalance2(
         Calculates difference between equilibrium fO2 and atmospheric pO2.
         fraction_ferric is the fraction of total Iron that is Fe3+ (FeO1.5).
         """
-        # Clamp to avoid log(0) errors at perfectly reduced/oxidized extremes
-        safe_ferric = np.clip(fraction_ferric, 1e-20, 1.0 - 1e-20)
+        # Clamp to avoid log(0) errors at perfectly reduced/oxidized extremes.
+        # The upper bound must be representable: 1 - 1e-20 rounds to exactly 1.0 in float64.
+        safe_ferric = np.clip(fraction_ferric, 1e-20, 1.0 - 1e-15)
 
         # Melt Equilibrium Fugacity (fO2)
         log_ferric_ferrous_ratio = np.log(safe_ferric / (1.0 - safe_ferric))

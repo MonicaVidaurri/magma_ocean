@@ -1,130 +1,118 @@
+"""Diagnostics and summary metrics from an integrated solution."""
 import numpy as np
 
-from utils.get_melt_fractions import get_melt_fractions
-from utils.get_pressure2 import get_pressure2
-from utils.get_massbalance4 import get_massbalance4
-
-from physics.mantleheatflux import mantleheatflux
-from physics.radiogenics import get_radiogenic_heat
-from physics.tides import calculate_tidal_dissipation
-from physics.shear_modulus import calc_shear_modulus
-from TidalPy.utilities.conversions.conversions_x import semi_a2orbital_motion
+from ODEs.combined_ode import STATE_NAMES
 
 
-def postprocess_magma_ocean(
-        sol_unified, Rp, Rc, Mmantle, gp, OLR_interp, ASR, Teq, Xi, FeOt,
-        t_flux, Lbol, tsat, a, Mp, LStar, params):
+def postprocess_magma_ocean(model, t_sec, states):
+    """
+    Evaluate every diagnostic of the model at each output time.
 
-    c      = params['constants']
-    thermo = params['planet']['thermodynamics']
+    The diagnostics come from the same function the integrator used (`MagmaOceanModel.evaluate`), so the reported
+    heating, pressures, and melt fractions are exactly those that drove the evolution.
 
-    surface_area  = 4.0 * np.pi * Rp**2
-    volume_mantle = (4.0 / 3.0) * np.pi * (Rp**3 - Rc**3)
-    rho_mantle    = Mmantle / volume_mantle
+    Parameters
+    ----------
+    model : MagmaOceanModel
+        The model that produced the solution.
+    t_sec : ndarray, shape (n,)
+        Output times (s).
+    states : ndarray, shape (num_states, n)
+        State vectors at the output times.
 
-    Mh            = params['star']['mass_star_relative'] * c['mass_sun']
-    Rh            = params['star']['host_radius']
-    tides_on_flag = params['simulation']['tides_on']
+    Returns
+    -------
+    results : dict
+        ``'t'`` (s), ``'Tr'`` (the state array), one array per state name, one array per diagnostic, and
+        ``'summary'`` (see `summarize`).
+    """
+    num_steps = states.shape[1]
+    results = {'t': np.asarray(t_sec), 'Tr': states}
+    for index, name in enumerate(STATE_NAMES):
+        results[name] = states[index, :]
 
-    mf_threshold      = params['planet']['convection']['melt_fraction_threshold']
-    solidus_low_p_int = thermo['solidus_intercept_low_p']
+    for step in range(num_steps):
+        derivatives, diagnostics = model.evaluate(t_sec[step], states[:, step])
+        if step == 0:
+            for name in diagnostics:
+                results[name] = np.empty(num_steps, dtype=np.float64)
+            results['dtemp_mantle_dt'] = np.empty(num_steps, dtype=np.float64)
+        for name, value in diagnostics.items():
+            results[name][step] = value
+        results['dtemp_mantle_dt'][step] = derivatives[4]
 
-    # Grid is pre-built in run_model and stored in params
-    grid = params['_grid']
+    results['summary'] = summarize(model, results)
+    return results
 
-    t_sec   = sol_unified.t
-    Tr      = sol_unified.y
-    n_steps = Tr.shape[1]
 
-    Mmo         = np.zeros(n_steps)
-    Wmo         = np.zeros(n_steps)
-    meltfrac    = np.zeros(n_steps)
-    Patm        = np.zeros(n_steps)
-    PO2         = np.zeros(n_steps)
-    Q_rad       = np.zeros(n_steps)
-    Q_tid       = np.zeros(n_steps)
-    tidal_scale = np.zeros(n_steps)
-    tidal_shear = np.zeros(n_steps)
-    tidal_visc  = np.zeros(n_steps)
+def _first_time(times, condition):
+    """First time where `condition` is true, or NaN."""
+    indices = np.flatnonzero(condition)
+    return float(times[indices[0]]) if indices.size else float('nan')
 
-    for i in range(n_steps):
-        temp_mantle     = Tr[4, i]
-        radius_solid    = Tr[5, i]
-        mass_water_atm  = max(Tr[7, i], 0.0)
-        mass_oxygen_atm = max(Tr[8, i], 0.0)
-        temp_surface    = Tr[10, i]
 
-        # --- Phase determination (matches ODE criterion) ---
-        _, meltfrac_bulk, meltfrac_mo = get_melt_fractions(temp_mantle, grid)
-        if temp_mantle <= solidus_low_p_int:
-            meltfrac_bulk = 0.0
-            meltfrac_mo   = 0.0
+def _last_time(times, condition):
+    """Last time where `condition` is true, or NaN."""
+    indices = np.flatnonzero(condition)
+    return float(times[indices[-1]]) if indices.size else float('nan')
 
-        is_magma_ocean = (meltfrac_bulk >= mf_threshold)
-        meltfrac[i]    = meltfrac_bulk
 
-        Mmo[i] = max((4.0 / 3.0) * np.pi * (Rp**3 - radius_solid**3) * rho_mantle, 0.0)
-        Wmo[i] = mass_water_atm if is_magma_ocean else 0.0
+def summarize(model, results):
+    """
+    Scalar metrics describing the timing and amount of outgassing, used to compare runs (e.g., tides on vs off).
 
-        if is_magma_ocean:
-            if mass_water_atm > 0.0 and Mmo[i] > 0.0:
-                Patm[i], _, _ = get_pressure2(
-                    temp_mantle, radius_solid, Mmo[i], Mmantle,
-                    Rp, gp, Rc, mass_water_atm, params
-                )
-            if mass_oxygen_atm > 0.0 and Mmo[i] > (0.01 * Mmantle):
-                PO2[i], _, _, _ = get_massbalance4(
-                    temp_mantle, Patm[i], Mmo[i], mass_oxygen_atm,
-                    Xi, FeOt, gp, Rp, params
-                )
-                if PO2[i] < 0.0:
-                    PO2[i] = mass_oxygen_atm * gp / surface_area
-            else:
-                PO2[i] = mass_oxygen_atm * gp / surface_area
+    Times are in years and are NaN when the event never happens within the run. "Liquid layer" means a surface layer
+    whose melt fraction exceeds the rheological transition (the magma ocean in the rheological sense). "Bulk melt below
+    critical" is the old model's magma-ocean end criterion (bulk melt fraction below the rheological transition).
+    """
+    props          = model.planet
+    seconds_per_yr = model.params['constants']['seconds_per_year']
+    t_years        = results['t'] / seconds_per_yr
 
-            heatflux_water = min(mass_water_atm / Mmo[i], 1.0) if Mmo[i] > 0 else 0.0
-            mf_heat        = meltfrac_mo
-            Db_phys        = radius_solid
-            tidal_rad      = radius_solid
-        else:
-            Patm[i] = mass_water_atm * gp / surface_area
-            PO2[i]  = mass_oxygen_atm * gp / surface_area
+    has_liquid_layer = results['radius_rheological'] < props.radius
+    bulk_is_liquid   = results['meltfrac'] >= model.critical_melt_fraction
+    has_melt         = results['mass_melt'] > 0.0
+    water_total      = results['mass_water_solid'] + results['mass_water_fluid']
+    water_surface    = results['mass_water_vapor'] + results['mass_water_ocean']
+    water_initial    = water_total[0]
+    water_lost       = water_initial - water_total
 
-            heatflux_water = Tr[6, i] / Mmantle
-            mf_heat        = meltfrac_bulk
-            Db_phys        = Rc
-            tidal_rad      = Rp
+    def water_loss_time(fraction):
+        if water_initial <= 0.0:
+            return float('nan')
+        return _first_time(t_years, water_lost >= fraction * water_initial)
 
-        Q_rad[i] = get_radiogenic_heat(t_sec[i], Mmantle, params)
+    peak_index = int(np.argmax(water_surface))
 
-        _, _, _, _, nu = mantleheatflux(
-            temp_mantle, temp_surface, Db_phys, Rp, Rc, gp, rho_mantle,
-            heatflux_water, mf_heat, params
-        )
-        visc  = nu * rho_mantle
-        solid_shear_modulus = calc_shear_modulus(meltfrac_bulk, params)
-
-        orbital_freq = semi_a2orbital_motion(Tr[0, i], Mh, Mp)
-        _, _, _, _, _, Q_tid[i], tidal_scale[i], tidal_shear[i], tidal_visc[i] = (
-            calculate_tidal_dissipation(
-                Tr[1, i], orbital_freq, Tr[3, i], Tr[2, i], Rp, Rh, Mp, Mh,
-                Rc, visc, solid_shear_modulus,
-                tidal_rad, tides_on_flag, params
-            )
-        )
-
-    # Event time estimates (zero-crossings of meltfrac_bulk - threshold)
-    mf_diff        = meltfrac - mf_threshold
-    crossings_mf   = np.where(np.diff(np.sign(mf_diff)))[0]
-    t_crust        = t_sec[crossings_mf] / c['seconds_per_year']
-
-    wf_diff        = (Tr[6, :] / Mmantle) - 1e-9
-    crossings_wf   = np.where(np.diff(np.sign(wf_diff)))[0]
-    t_degas        = t_sec[crossings_wf] / c['seconds_per_year']
-
+    # Water stored in the solid mantle (cumulates) reaches the surface late, through solid-state degassing once the
+    # liquid layer has thinned. Time for that reservoir to fall to half of its peak.
+    water_solid      = results['mass_water_solid']
+    solid_peak_index = int(np.argmax(water_solid))
+    after_solid_peak = np.arange(water_solid.size) > solid_peak_index
+    solid_half_time  = _first_time(t_years, after_solid_peak & (water_solid < 0.5 * water_solid[solid_peak_index]))
     return {
-        't': t_sec, 'Tr': Tr, 'Mmo': Mmo, 'Wmo': Wmo, 'meltfrac': meltfrac,
-        'Patm': Patm, 'PO2': PO2, 'Q_rad': Q_rad, 'Q_tid': Q_tid,
-        'tidal_scale': tidal_scale, 'tidal_shear': tidal_shear, 'tidal_visc': tidal_visc,
-        't_crust': t_crust, 't_degas': t_degas, 'melt_fraction': meltfrac,
+        'end_time_years': float(t_years[-1]),
+        # The pre-2026-09 model's magma ocean ended when the bulk melt fraction fell below the rheological transition.
+        'time_bulk_melt_below_critical_years': _first_time(t_years, ~bulk_is_liquid),
+        'time_liquid_layer_first_end_years': _first_time(t_years, ~has_liquid_layer),
+        'time_liquid_layer_last_years': _last_time(t_years, has_liquid_layer),
+        'liquid_layer_at_end': bool(has_liquid_layer[-1]),
+        'time_melt_first_gone_years': _first_time(t_years, ~has_melt),
+        'melt_at_end': bool(has_melt[-1]),
+        'peak_surface_water_kg': float(water_surface[peak_index]),
+        'time_peak_surface_water_years': float(t_years[peak_index]),
+        'time_water_lost_50pct_years': water_loss_time(0.5),
+        'time_water_lost_90pct_years': water_loss_time(0.9),
+        'water_lost_fraction_final': float(water_lost[-1] / water_initial) if water_initial > 0.0 else float('nan'),
+        'peak_solid_water_kg': float(water_solid[solid_peak_index]),
+        'time_solid_water_half_degassed_years': solid_half_time,
+        'water_solid_final_kg': float(results['mass_water_solid'][-1]),
+        'water_surface_final_kg': float(water_surface[-1]),
+        'PO2_final_pa': float(results['PO2'][-1]),
+        'PO2_max_pa': float(np.max(results['PO2'])),
+        'Patm_final_pa': float(results['Patm'][-1]),
+        'temp_mantle_final_k': float(results['temp_mantle'][-1]),
+        'meltfrac_final': float(results['meltfrac'][-1]),
+        'eccentricity_final': float(results['eccentricity'][-1]),
+        'tidal_heating_max_w': float(np.max(results['Q_tid'])),
     }

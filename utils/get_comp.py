@@ -69,7 +69,8 @@ def get_comp(params, composition_model=1):
         # Initial oxidation state (Highly reduced initial magma ocean)
         ratio_Fe3_to_total_Fe = comp['ratio_Fe3_to_total_Fe']
     else:
-        raise NotImplementedError(f"Unsupported composition model: {composition_model}. Only model 1 (BSE) is implemented.")
+        raise NotImplementedError(
+            f"Unsupported composition model: {composition_model}. Only model 1 (BSE) is implemented.")
 
     # --- Convert Mass Fractions to Moles (mol per gram of bulk rock) ---
     moles_SiO2  = mass_frac_SiO2 / molar_mass_SiO2

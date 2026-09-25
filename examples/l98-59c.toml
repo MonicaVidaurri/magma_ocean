@@ -1,0 +1,60 @@
+# ==============================================================================
+# L 98-59 c: just-formed example
+# Not in an exact resonance, so e evolves freely from its present value.
+# ==============================================================================
+[simulation]
+version = "0.8d"                    # simulation version just for tracking changes.
+method = "BDF"                      # LSODA can fail on the stiff tidal spin lock
+rtol = 3.0e-5
+atol = 1.0e-6
+start_time_years = 1.0
+end_time_years = 1e+09
+tides_on = true
+
+[numerical]
+melt_grid_step = 5000.0             # 5km steps for mantle integration
+degas_max_depth = 300000.0          # 300km limit for shallow degassing
+degas_step_size = 1000.0            # 1km resolution for melt zones
+
+# ==============================================================================
+# Host Star (L 98-59, M3V)
+# ==============================================================================
+[star]
+mass_star_relative = 0.273          # Solar masses
+lum_star_relative = 0.0112          # Present-day bolometric luminosity (L_sun); the track sets the evolving value
+host_radius = 2.108e8               # (m)
+spin_days = 80.9                    # Present-day rotation period; only affects the (negligible) stellar tides
+stellar_track_file = "data/stellar_dataL98-59.txt"
+
+[star.xuv]
+f_sat = 1.0e-3                      # Saturated L_xuv / L_bol
+decay_beta = -1.23                  # Ribas et al. decay slope
+tsat_years = 1.0e9                  # M-dwarf saturation lasts ~1 Gyr
+heating_efficiency = 0.15           # Standard hydrodynamic efficiency
+
+[star.tides]
+moi_factor = 0.209                  # Fully convective; BHAC15 gyration radii
+
+# ==============================================================================
+# Planet (L 98-59 c)
+# ==============================================================================
+[planet]
+albedo = 0.30                       # Bond albedo (Earth-like estimate)
+radius_planet_relative = 1.385      # Measured (Demangeon et al. 2021)
+mass_planet_relative = 2.22         # Measured (Demangeon et al. 2021)
+radius_core_relative = 0.55         # Earth-like core (assumed)
+core_mass_fraction = 0.32           # Earth-like core (assumed)
+ocean_mass_multiplier = 3.21        # Earth oceans; TRAPPIST-1e's water mass fraction (1 ocean per 0.692 M_earth)
+initial_mantle_temp = 3490.0        # Initial bulk melt fraction 0.83 (as the other examples)
+initial_spin_multiplier = 3.69      # 1-day primordial spin (orbital period / 1 day)
+
+[planet.orbit]
+initial_semi_major_axis = 0.0304    # (au)
+initial_eccentricity = 0.10         # Present value (Demangeon et al. 2021)
+fixed_eccentricity = false          # Free to damp
+
+[planet.atmosphere.escape]
+xuv_model = 1
+source_frac_H = 0.666               # H2O dissociation source (2/3 Hydrogen)
+source_frac_O = 0.333               # (1/3 Oxygen)
+diffusion_scaling = 4.8e19          # Scale for H-O drag models

@@ -81,12 +81,14 @@ def mantleheatflux(
     # --- Rayleigh Number Calculation ---
     temp_difference = abs(temp_mantle - temp_surface)
     
-    rayleigh_number = (gravity * thermal_expansion * temp_difference * depth_convective_zone**3) / (kinematic_viscosity * thermal_diffusivity)
+    rayleigh_number = ((gravity * thermal_expansion * temp_difference * depth_convective_zone**3)
+                       / (kinematic_viscosity * thermal_diffusivity))
 
     # --- Heat Flux & Boundary Layer Parameters ---
     # Convective heat flux scaling for hard-turbulent regime (Ra^1/3)
     nusselt_coefficient = conv['nusselt_coefficient']
-    heat_flux_mantle = nusselt_coefficient * thermal_conductivity * temp_difference * (rayleigh_number**(1.0 / 3.0)) / depth_convective_zone
+    heat_flux_mantle = (nusselt_coefficient * thermal_conductivity * temp_difference * (rayleigh_number**(1.0 / 3.0))
+                        / depth_convective_zone)
 
     # Thermal boundary layer thickness via Fourier's Law of Conduction (m)
     depth_boundary_layer = thermal_conductivity * temp_difference / heat_flux_mantle
