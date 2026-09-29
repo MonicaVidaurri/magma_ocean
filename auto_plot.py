@@ -1,270 +1,351 @@
-import glob
-from scipy.interpolate import griddata
+"""
+Figures comparing tides-on and tides-off runs from an auto_run.py sweep.
+
+Figures (saved in <sweep>/plots):
+
+- ``metrics_vs_eccentricity.png``: magma ocean lifetime, water-loss timing, peak outgassing time, and the time to
+  degas the water stored in the solid mantle, versus initial eccentricity, one line per initial spin, with the
+  tides-off result as a dashed reference.
+- ``timeseries_spin<S>.png``: time series for each initial spin S, one line per eccentricity plus tides off.
+- ``lifetime_ratio.png``: magma ocean lifetime with tides divided by without, over the eccentricity-spin grid.
+- ``map_<column>.png``: one output column (default PO2) over the initial eccentricity-spin grid at snapshot times.
+
+Usage::
+
+    python auto_plot.py results/tides_sweep_trappist1e
+    python auto_plot.py results/tides_sweep_trappist1e --map-column Patm --map-times 1e4 1e6 1e8
+"""
+import argparse
+import sys
+from pathlib import Path
+
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.colors as colors
-import matplotlib.ticker as ticker
 
-dirname = 'autotides_t1e_lowXUV_tidesoff'
-plotdir = 'results/plots/new_PO2/tidesOFF/t1e_high'
+REPO_ROOT = Path(__file__).resolve().parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-rootdir = '/Users/mvidaurr/Desktop/PycharmProjects/magma_ocean'
-# ecc_range = np.linspace(0.02, 0.6, num=20)
-# spin_range = np.linspace(start=-100,stop=100,num=20)
-# time_range = [1e3, 1e5, 5e5, 1e6, 1e8, 5e8, 1e9]
+from utils.logger import get_logger, setup_logging
+from utils.plotting import INK_PRIMARY, INK_SECONDARY, SERIES_COLORS, style_axis
 
-# ecc_range = np.linspace(0.02, 0.6, num=5)
-# spin_range = np.linspace(start=-100,stop=100,num=15)
-time_range = [1e5, 1e6, 1e7, 1e8, 1e9]
+log = get_logger('auto_plot')
 
-ecc_range = np.linspace(0.0001, 0.2, 20)
-spin_range = np.arange(-10,11,dtype=np.float64)
+# Sweep columns in sweep_summary.tsv are the dotted configuration keys used in auto_run.SWEEP.
+ECC_KEY  = 'planet.orbit.initial_eccentricity'
+SPIN_KEY = 'planet.initial_spin_multiplier'
 
-results_path = glob.glob('results/low_values/'+dirname+'/*/*/*')
-paths = []
-ecc_vals = []
-spin_vals = []
-for t in time_range:
-    new_time = '{:.0e}'.format(t)
-    for e in ecc_range:
-        new_ecc = '{:.3}'.format(e)
-        ecc_vals.append(new_ecc)
-        for s in spin_range:
-            new_spin = '{:.3}'.format(s)
-            spin_vals.append(new_spin)
-            srchstring = 'output'
-            for path in results_path:
-                pathstr = 'results/'+dirname+'/t=' + new_time + '/ecc=' + new_ecc + '/spin=' + new_spin
-                use_paths = glob.glob(pathstr+'/*')
-            for file in use_paths:
-                if srchstring in file:
-                    paths.append(file)
+# Sequential blue ramp (light to dark) for ordered values such as eccentricity; starts at a step that stays visible
+# on a white background.
+ORDINAL_BLUES = ('#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf', '#1c5cab', '#184f95', '#104281',
+                 '#0d366b')
 
-def time0():
-    time0 = '1e+05'
-    dfs_all = []
-    for file in paths:
-        if time0 in file:
-            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
-            temp_df = pd.DataFrame({"ecc": df1["eccentricity"],"spin": df1["spin_ratio_planet"],"PO2": df1["PO2"]})
-            temp_df.dropna(inplace=True)
-            dfs_all.append(temp_df)
+METRICS = (
+    # column, axis label, log scale
+    ('time_bulk_melt_below_critical_years', 'Magma ocean lifetime [yr]\n(bulk melt < critical)', True),
+    ('time_water_lost_50pct_years', 'Time to lose 50% of water [yr]', True),
+    ('time_peak_surface_water_years', 'Time of peak surface water [yr]', True),
+    ('time_solid_water_half_degassed_years', 'Time to degas half of the\nsolid-mantle water [yr]', True),
+)
 
-    df_all = pd.concat(dfs_all, ignore_index=True)
 
-    x = df_all['ecc'].values
-    y = df_all['spin'].values
-    z = df_all['PO2'].values
+def ordinal_colors(count):
+    """`count` colors spread along the ordinal blue ramp."""
+    if count == 1:
+        return [ORDINAL_BLUES[4]]
+    indices = np.linspace(0, len(ORDINAL_BLUES) - 1, count).round().astype(int)
+    return [ORDINAL_BLUES[index] for index in indices]
 
-    x_grid = np.linspace(x.min(), x.max(), 200)
-    y_grid = np.linspace(y.min(), y.max(), 200)
-    x1, y1 = np.meshgrid(x_grid, y_grid)
 
-    z1 = griddata((x, y), z, (x1, y1), method='linear')
+def _style_plain(axis, ylabel, log_y):
+    """Axis styling for plots whose x-axis is not time."""
+    axis.set_ylabel(ylabel, color=INK_PRIMARY)
+    if log_y:
+        axis.set_yscale('log')
+    axis.grid(True, color='#d9d8d4', linewidth=0.6)
+    axis.tick_params(colors=INK_SECONDARY, labelsize=9)
+    for spine in ('top', 'right'):
+        axis.spines[spine].set_visible(False)
 
-    contour = plt.contourf(x1,y1,z1, levels=20, cmap='viridis')
-    ####colorbar type 1
-    # cbar = plt.colorbar(contour)
-    # cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    # cbar.set_label('PO2')
-    ####colorbar type 2
-    tick_locations = np.linspace(df_all['PO2'].min(), df_all['PO2'].max(), 7)
-    cbar = plt.colorbar(contour,ticks=tick_locations)
-    cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    cbar.ax.yaxis.set_ticklabels(['1e-56', '1e5', '5e5', '1e6', '5e6', '1e7', '1e8'])
-    cbar.set_label('PO2')
 
-    #overlay OG data points to see the density
-    # plt.scatter(x, y, color='black', s=5, alpha=0.3, label='Data Points')
+def _metric_or_end(frame, column):
+    """
+    Metric values, with events that never happened (NaN) replaced by the run end time.
 
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.title('t = ' + time0 + ' years')
-    plt.savefig(plotdir+'/t_'+time0+'.png')
+    Returns the values and a mask of which ones were replaced, so they can be drawn as lower limits.
+    """
+    values = frame[column].to_numpy(dtype=np.float64)
+    missing = ~np.isfinite(values)
+    if column.endswith('_years'):
+        values = np.where(missing, frame['end_time_years'].to_numpy(dtype=np.float64), values)
+    return values, missing
 
-    plt.show()
 
-def time1():
-    time1 = '1e+06'
-    dfs_all = []
+# ======================================================================================================================
+# Figures
+# ======================================================================================================================
+def plot_metrics(summary, plot_dir):
+    """
+    Summary metrics versus initial eccentricity, one line per initial spin, tides-off as a dashed reference.
 
-    for file in paths:
-        if time1 in file:
-            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
-            temp_df = pd.DataFrame({"ecc": df1["eccentricity"],"spin": df1["spin_ratio_planet"],"PO2": df1["PO2"]})
-            temp_df.dropna(inplace=True)
-            dfs_all.append(temp_df)
+    Parameters
+    ----------
+    summary : pandas.DataFrame
+        Rows of one baseline group: tides-on cases plus their tides-off baseline.
+    plot_dir : pathlib.Path
+        Output directory.
 
-    df_all = pd.concat(dfs_all, ignore_index=True)
+    Returns
+    -------
+    pathlib.Path
+    """
+    tides_on  = summary[summary['tides_on']]
+    tides_off = summary[~summary['tides_on']]
+    spins = sorted(tides_on[SPIN_KEY].unique())
 
-    x = df_all['ecc'].values
-    y = df_all['spin'].values
-    z = df_all['PO2'].values
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
+    for axis, (column, label, log_y) in zip(axes.flat, METRICS):
+        _style_plain(axis, label, log_y)
+        for index, spin in enumerate(spins):
+            subset = tides_on[tides_on[SPIN_KEY] == spin].sort_values(ECC_KEY)
+            values, missing = _metric_or_end(subset, column)
+            color = SERIES_COLORS[index]
+            axis.plot(subset[ECC_KEY], values, color=color, linewidth=2.0, marker='o', markersize=6,
+                      label=f'tides on, spin = {spin:g} n')
+            if missing.any():
+                # Open markers: the event had not happened by the end of the run (value is a lower limit).
+                axis.plot(subset[ECC_KEY][missing], values[missing], linestyle='none', marker='o', markersize=9,
+                          markerfacecolor='white', markeredgecolor=color, markeredgewidth=1.5)
+        if len(tides_off):
+            baseline, _ = _metric_or_end(tides_off, column)
+            axis.axhline(baseline[0], color=INK_PRIMARY, linestyle='--', linewidth=1.5, label='tides off')
+    for axis in axes[-1]:
+        axis.set_xlabel('Initial eccentricity', color=INK_PRIMARY)
+    axes[0, 0].legend(fontsize=8, frameon=False)
+    fig.suptitle('Tides on vs off (open markers: not reached by the end of the run)', color=INK_PRIMARY)
+    fig.tight_layout()
+    path = plot_dir / 'metrics_vs_eccentricity.png'
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
 
-    x_grid = np.linspace(x.min(), x.max(), 200)
-    y_grid = np.linspace(y.min(), y.max(), 200)
-    x1, y1 = np.meshgrid(x_grid, y_grid)
 
-    z1 = griddata((x, y), z, (x1, y1), method='linear')
+def plot_timeseries(summary, plot_dir):
+    """
+    Time series for each initial spin: one line per eccentricity (ordinal blues) plus the tides-off run (dashed).
 
-    contour = plt.contourf(x1,y1,z1, levels=20, cmap='viridis')
-    ####colorbar type 1
-    # cbar = plt.colorbar(contour)
-    # cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    # cbar.set_label('PO2')
-    ####colorbar type 2
-    tick_locations = np.linspace(df_all['PO2'].min(), df_all['PO2'].max(), 7)
-    cbar = plt.colorbar(contour,ticks=tick_locations)
-    cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    cbar.ax.yaxis.set_ticklabels(['1e-56', '1e5', '5e5', '1e6', '5e6', '1e7', '1e8'])
-    cbar.set_label('PO2')
+    Parameters
+    ----------
+    summary : pandas.DataFrame
+        Rows of one baseline group (see `plot_metrics`).
+    plot_dir : pathlib.Path
+        Output directory.
 
-    #overlay OG data points to see the density
-    # plt.scatter(x, y, color='black', s=5, alpha=0.3, label='Data Points')
+    Returns
+    -------
+    list of pathlib.Path
+    """
+    tides_on  = summary[summary['tides_on']]
+    tides_off = summary[~summary['tides_on']]
+    baseline_table = pd.read_csv(tides_off['output_table'].iloc[0], sep='\t') if len(tides_off) else None
+    paths = []
 
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.title('t = ' + time1 + ' years')
-    plt.savefig(plotdir+'/t_'+time1+'.png')
+    panels = (
+        # column(s), label, log, scale
+        ('temp_mantle', 'Mantle potential T [K]', False),
+        ('meltfrac', 'Bulk melt fraction [%]', False),
+        ('Q_tid', 'Tidal heating [W]', True),
+        (('mass_water_vapor', 'mass_water_ocean'), 'Surface water / initial', True),
+        ('PO2', 'O$_2$ pressure [Pa]', True),
+    )
 
-    plt.show()
+    def column_values(table, column):
+        if isinstance(column, tuple):
+            return sum(table[name] for name in column)
+        return table[column]
 
-def time2():
-    time2 = '1e+07'
-    dfs_all = []
+    for spin in sorted(tides_on[SPIN_KEY].unique()):
+        subset = tides_on[tides_on[SPIN_KEY] == spin].sort_values(ECC_KEY)
+        colors = ordinal_colors(len(subset))
+        fig, axes = plt.subplots(len(panels), 1, figsize=(9, 2.3 * len(panels) + 0.6), sharex=True)
+        for axis, (column, label, log_y) in zip(axes, panels):
+            style_axis(axis, label, log_y=log_y)
+            for color, (_, row) in zip(colors, subset.iterrows()):
+                table = pd.read_csv(row['output_table'], sep='\t')
+                values = column_values(table, column).to_numpy(dtype=np.float64)
+                if log_y:
+                    values = np.where(values > 0.0, values, np.nan)
+                axis.plot(table['time_yr'], values, color=color, linewidth=1.8, label=f'e = {row[ECC_KEY]:g}')
+            if baseline_table is not None:
+                values = column_values(baseline_table, column).to_numpy(dtype=np.float64)
+                if log_y:
+                    values = np.where(values > 0.0, values, np.nan)
+                axis.plot(baseline_table['time_yr'], values, color=INK_PRIMARY, linestyle='--', linewidth=1.5,
+                          label='tides off')
+            if log_y:
+                axis.set_ylim(bottom=1e-8 if column != 'Q_tid' else 1e10)
+        axes[0].legend(fontsize=8, frameon=False, ncol=2)
+        axes[-1].set_xlabel('Time [yr]', color=INK_PRIMARY)
+        fig.suptitle(f'Initial spin = {spin:g} x orbital motion', color=INK_PRIMARY)
+        fig.tight_layout()
+        path = plot_dir / f'timeseries_spin{spin:g}.png'
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        paths.append(path)
+    return paths
 
-    for file in paths:
-        if time2 in file:
-            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
-            temp_df = pd.DataFrame({"ecc": df1["eccentricity"], "spin": df1["spin_ratio_planet"], "PO2": df1["PO2"]})
-            temp_df.dropna(inplace=True)
-            dfs_all.append(temp_df)
 
-    df_all = pd.concat(dfs_all, ignore_index=True)
+def plot_lifetime_ratio(summary, plot_dir):
+    """
+    Heat map of magma ocean lifetime with tides divided by without, over initial eccentricity and spin.
 
-    x = df_all['ecc'].values
-    y = df_all['spin'].values
-    z = df_all['PO2'].values
+    Parameters
+    ----------
+    summary : pandas.DataFrame
+        Rows of one baseline group (see `plot_metrics`).
+    plot_dir : pathlib.Path
+        Output directory.
 
-    x_grid = np.linspace(x.min(), x.max(), 200)
-    y_grid = np.linspace(y.min(), y.max(), 200)
-    x1, y1 = np.meshgrid(x_grid, y_grid)
+    Returns
+    -------
+    pathlib.Path or None
+        None if the group has no tides-off baseline.
+    """
+    tides_on  = summary[summary['tides_on']]
+    tides_off = summary[~summary['tides_on']]
+    if not len(tides_off):
+        return None
+    column = 'time_bulk_melt_below_critical_years'
+    baseline, _ = _metric_or_end(tides_off, column)
+    eccentricities = sorted(tides_on[ECC_KEY].unique())
+    spins = sorted(tides_on[SPIN_KEY].unique())
+    ratio = np.full((len(spins), len(eccentricities)), np.nan)
+    lower_limit = np.zeros_like(ratio, dtype=bool)
+    for _, row in tides_on.iterrows():
+        values, missing = _metric_or_end(row.to_frame().T, column)
+        i, j = spins.index(row[SPIN_KEY]), eccentricities.index(row[ECC_KEY])
+        ratio[i, j] = values[0] / baseline[0]
+        lower_limit[i, j] = missing[0]
 
-    z1 = griddata((x, y), z, (x1, y1), method='linear')
+    fig, axis = plt.subplots(figsize=(1.3 * len(eccentricities) + 2.5, 1.0 * len(spins) + 2.0))
+    image = axis.imshow(np.log10(ratio), cmap=matplotlib.colors.LinearSegmentedColormap.from_list(
+        'blues', ('#f0efec',) + ORDINAL_BLUES), aspect='auto', origin='lower')
+    for i in range(len(spins)):
+        for j in range(len(eccentricities)):
+            if np.isfinite(ratio[i, j]):
+                text = f"{'>' if lower_limit[i, j] else ''}{ratio[i, j]:.3g}"
+                shade = np.log10(ratio[i, j]) > 0.6 * np.nanmax(np.log10(ratio))
+                axis.text(j, i, text, ha='center', va='center', fontsize=8,
+                          color='white' if shade else INK_PRIMARY)
+    axis.set_xticks(range(len(eccentricities)), [f'{value:g}' for value in eccentricities])
+    axis.set_yticks(range(len(spins)), [f'{value:g}' for value in spins])
+    axis.set_xlabel('Initial eccentricity', color=INK_PRIMARY)
+    axis.set_ylabel('Initial spin / orbital motion', color=INK_PRIMARY)
+    colorbar = fig.colorbar(image, ax=axis)
+    colorbar.set_label('log$_{10}$(lifetime with tides / without)', color=INK_PRIMARY)
+    axis.set_title('Magma ocean lifetime ratio (">": still molten at end)', color=INK_PRIMARY)
+    fig.tight_layout()
+    path = plot_dir / 'lifetime_ratio.png'
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
 
-    contour = plt.contourf(x1, y1, z1, levels=20, cmap='viridis')
-    ####colorbar type 1
-    # cbar = plt.colorbar(contour)
-    # cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    # cbar.set_label('PO2')
-    ####colorbar type 2
-    tick_locations = np.linspace(df_all['PO2'].min(), df_all['PO2'].max(), 7)
-    cbar = plt.colorbar(contour,ticks=tick_locations)
-    cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    cbar.ax.yaxis.set_ticklabels(['1e-56', '1e5', '5e5', '1e6', '5e6', '1e7', '1e8'])
-    cbar.set_label('PO2')
 
-    # overlay OG data points to see the density
-    # plt.scatter(x, y, color='black', s=5, alpha=0.3, label='Data Points')
+def plot_snapshot_maps(summary, plot_dir, column, times, log_floor):
+    """
+    One output column over the initial eccentricity-spin grid, one panel per snapshot time (log color scale).
 
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.title('t = ' + time2 + ' years')
-    plt.savefig(plotdir + '/t_' + time2 + '.png')
+    Parameters
+    ----------
+    summary : pandas.DataFrame
+        Rows of one baseline group (see `plot_metrics`).
+    plot_dir : pathlib.Path
+        Output directory.
+    column : str
+        Column of the per-case output tables (e.g., ``PO2``).
+    times : sequence of float
+        Snapshot times (yr). A run that ended earlier contributes its last value.
+    log_floor : float
+        Values below this are drawn at it (runs that never outgas sit many decades lower).
 
-    plt.show()
+    Returns
+    -------
+    pathlib.Path
+    """
+    tides_on = summary[summary['tides_on']]
+    eccentricities = sorted(tides_on[ECC_KEY].unique())
+    spins = sorted(tides_on[SPIN_KEY].unique())
+    grids = np.full((len(times), len(spins), len(eccentricities)), np.nan)
+    for _, row in tides_on.iterrows():
+        table = pd.read_csv(row['output_table'], sep='\t')
+        values = np.interp(times, table['time_yr'], table[column].to_numpy(dtype=np.float64))
+        grids[:, spins.index(row[SPIN_KEY]), eccentricities.index(row[ECC_KEY])] = values
+    grids = np.maximum(grids, log_floor)
+    norm = matplotlib.colors.LogNorm(vmin=log_floor, vmax=max(np.nanmax(grids), 10.0 * log_floor))
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list('blues', ('#f0efec',) + ORDINAL_BLUES)
 
-def time3():
-    time3 = '1e+08'
-    dfs_all = []
+    columns = min(len(times), 3)
+    rows = int(np.ceil(len(times) / columns))
+    fig, axes = plt.subplots(rows, columns, figsize=(4.0 * columns + 1.2, 3.0 * rows + 0.6), squeeze=False,
+                             layout='constrained')
+    for index, (axis, time, grid) in enumerate(zip(axes.flat, times, grids)):
+        image = axis.imshow(grid, cmap=cmap, norm=norm, aspect='auto', origin='lower')
+        axis.set_xticks(range(len(eccentricities)), [f'{value:g}' for value in eccentricities])
+        axis.set_yticks(range(len(spins)), [f'{value:g}' for value in spins])
+        axis.set_title(f't = {time:.0e} yr', color=INK_PRIMARY, fontsize=10)
+        if index // columns == rows - 1 or index + columns >= len(times):
+            axis.set_xlabel('Initial eccentricity', color=INK_PRIMARY)
+        if index % columns == 0:
+            axis.set_ylabel('Initial spin / n', color=INK_PRIMARY)
+    for axis in axes.flat[len(times):]:
+        axis.set_visible(False)
+    fig.colorbar(image, ax=axes, label=column)
+    fig.suptitle(f'{column} by initial orbit (tides on)', color=INK_PRIMARY)
+    path = plot_dir / f'map_{column}.png'
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
 
-    for file in paths:
-        if time3 in file:
-            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
-            temp_df = pd.DataFrame({"ecc": df1["eccentricity"], "spin": df1["spin_ratio_planet"], "PO2": df1["PO2"]})
-            temp_df.dropna(inplace=True)
-            dfs_all.append(temp_df)
 
-    df_all = pd.concat(dfs_all, ignore_index=True)
+def main(argv=None):
+    """Command-line entry point: read sweep_summary.tsv and write the figures for each tides-off baseline group."""
+    parser = argparse.ArgumentParser(description='Plot an auto_run.py tides on/off sweep.')
+    parser.add_argument('sweep_dir', help='Directory holding sweep_summary.tsv.')
+    parser.add_argument('--map-column', default='PO2', help='Output column for the snapshot maps (default: PO2).')
+    parser.add_argument('--map-times', type=float, nargs='+', default=[1e5, 1e6, 1e7, 1e8, 1e9],
+                        help='Snapshot times in years (default: 1e5 1e6 1e7 1e8 1e9).')
+    parser.add_argument('--map-floor', type=float, default=1e-10,
+                        help='Lowest value on the maps\' log color scale (default: 1e-10).')
+    args = parser.parse_args(argv)
+    setup_logging()
 
-    x = df_all['ecc'].values
-    y = df_all['spin'].values
-    z = df_all['PO2'].values
+    sweep_dir = Path(args.sweep_dir)
+    summary = pd.read_csv(sweep_dir / 'sweep_summary.tsv', sep='\t')
+    summary['tides_on'] = summary['tides_on'].astype(bool)
+    failed = summary[~summary['success'].astype(bool)]
+    if len(failed):
+        log.warning(f"Skipping {len(failed)} failed case(s): {', '.join(failed['case_id'])}")
+    summary = summary[summary['success'].astype(bool)]
 
-    x_grid = np.linspace(x.min(), x.max(), 200)
-    y_grid = np.linspace(y.min(), y.max(), 200)
-    x1, y1 = np.meshgrid(x_grid, y_grid)
+    # Each tides-on case is compared with its own tides-off baseline (they differ when SWEEP holds keys that are
+    # not tides-only). One set of figures per baseline; a subdirectory per baseline when there are several.
+    baseline_ids = sorted(summary.loc[summary['tides_on'], 'baseline_id'].unique())
+    for baseline_id in baseline_ids:
+        group = summary[(summary['tides_on'] & (summary['baseline_id'] == baseline_id))
+                        | (summary['case_id'] == baseline_id)]
+        plot_dir = sweep_dir / 'plots' if len(baseline_ids) == 1 else sweep_dir / 'plots' / baseline_id
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        saved = [plot_metrics(group, plot_dir), *plot_timeseries(group, plot_dir),
+                 plot_lifetime_ratio(group, plot_dir),
+                 plot_snapshot_maps(group, plot_dir, args.map_column, args.map_times, args.map_floor)]
+        for path in saved:
+            if path is not None:
+                log.info(f'Saved {path}')
+    return 0
 
-    z1 = griddata((x, y), z, (x1, y1), method='linear')
 
-    contour = plt.contourf(x1, y1, z1, levels=20, cmap='viridis')
-    ####colorbar type 1
-    # cbar = plt.colorbar(contour)
-    # cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    # cbar.set_label('PO2')
-    ####colorbar type 2
-    tick_locations = np.linspace(df_all['PO2'].min(), df_all['PO2'].max(), 7)
-    cbar = plt.colorbar(contour,ticks=tick_locations)
-    cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    cbar.ax.yaxis.set_ticklabels(['1e-56', '1e5', '5e5', '1e6', '5e6', '1e7', '1e8'])
-    cbar.set_label('PO2')
-
-    # overlay OG data points to see the density
-    # plt.scatter(x, y, color='black', s=5, alpha=0.3, label='Data Points')
-
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.title('t = ' + time3 + ' years')
-    plt.savefig(plotdir + '/t_' + time3 + '.png')
-
-    plt.show()
-
-def time4():
-    time4 = '1e+09'
-    dfs_all = []
-
-    for file in paths:
-        if time4 in file:
-            df1 = pd.read_csv(file, sep='\t', skipinitialspace=True)
-            temp_df = pd.DataFrame({"ecc": df1["eccentricity"], "spin": df1["spin_ratio_planet"], "PO2": df1["PO2"]})
-            temp_df.dropna(inplace=True)
-            dfs_all.append(temp_df)
-
-    df_all = pd.concat(dfs_all, ignore_index=True)
-    x = df_all['ecc'].values
-    y = df_all['spin'].values
-    z = df_all['PO2'].values
-
-    x_grid = np.linspace(x.min(), x.max(), 200)
-    y_grid = np.linspace(y.min(), y.max(), 200)
-    x1, y1 = np.meshgrid(x_grid, y_grid)
-
-    z1 = griddata((x, y), z, (x1, y1), method='linear')
-    contour = plt.contourf(x1, y1, z1, levels=20, cmap='viridis')
-    ####colorbar type 1
-    # cbar = plt.colorbar(contour)
-    # cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    # cbar.set_label('PO2')
-    ####colorbar type 2
-    tick_locations = np.linspace(df_all['PO2'].min(), df_all['PO2'].max(), 7)
-    cbar = plt.colorbar(contour,ticks=tick_locations)
-    cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1e'))
-    cbar.ax.yaxis.set_ticklabels(['1e-56', '1e5', '5e5', '1e6', '5e6', '1e7', '1e8'])
-    cbar.set_label('PO2')
-
-    # overlay OG data points to see the density
-    # plt.scatter(x, y, color='black', s=5, alpha=0.3, label='Data Points')
-
-    plt.xlabel('Eccentricity')
-    plt.ylabel('Spin')
-    plt.title('t = ' + time4 + ' years')
-    plt.savefig(plotdir + '/t_' + time4 + '.png')
-
-    plt.show()
-
-# time0()
-# time1()
-# time2()
-# time3()
-time4()
+if __name__ == '__main__':
+    sys.exit(main())

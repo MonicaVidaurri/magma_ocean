@@ -37,10 +37,11 @@ Each run writes, into --output-dir (default: output/):
   <label>_*.png         orbit (a, e, spin), outgassing (rate, melt, pressure), and heating (tidal,
                         radiogenic, viscosity, shear modulus) figures
 
-Tides on vs off parameter sweeps (edit the SWEEP dictionary at the top of the script):
+Tides on vs off parameter sweeps (edit the SWEEP dictionary at the top of auto_run.py):
 
-    python auto_run_v3.py --workers 8
-    python auto_plot_v3.py results/tides_sweep_trappist1e
+    python auto_run.py --workers 8
+    python auto_plot.py results/tides_sweep_trappist1e
+    python auto_plot.py results/tides_sweep_trappist1e --map-column Patm --map-times 1e4 1e6 1e8
 
 Tests:
 

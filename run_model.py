@@ -183,8 +183,8 @@ def run_label(params):
 
 def results_table(results, params, water_scale):
     """
-    Output table. The first columns keep the names and units of the pre-2026-09 output so older plotting scripts
-    (auto_plot.py, auto_plot_v2.py) still work; new columns follow.
+    Output table. The first columns keep the names and units of the pre-2026-09 output so older analysis scripts still
+    work; new columns follow.
     """
     constants = params['constants']
     orbital_freq = results['orbital_freq']

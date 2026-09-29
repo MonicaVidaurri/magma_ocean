@@ -33,6 +33,7 @@
 - New option `planet.orbit.fixed_eccentricity` holds e at its initial value (a stand-in for forcing by other planets, e.g. a mean-motion resonance); a still evolves.
 - Single-run figures replaced: orbit (a, e, spin), outgassing (rate, melt fraction, pressure), heating (tidal, radiogenic, viscosity, shear modulus). Example TOMLs in `examples/` (spin-orbit resonance cascade; eccentricity held at 0.05).
 - Just-formed example TOMLs: Proxima b, TRAPPIST-1c and 1d (e held at the resonance-forced value), L 98-59 c; new BHAC15 0.3 Msun track `data/stellar_dataL98-59.txt`.
+- Sweep scripts consolidated: `auto_run.py` (was `auto_run_v3.py`) and `auto_plot.py` (was `auto_plot_v3.py`, plus the PO2 maps over initial e and spin that `auto_plot.py` / `auto_plot_v2.py` drew from the retired sweep layout). The v2/v3 files are deleted.
 - New option `planet.fixed_spin` holds the planet's spin rate (a stand-in for an unmodeled torque such as atmospheric thermal tides).
 - The implicit solvers get a bounded finite-difference Jacobian. scipy's default estimator grew the step for weakly coupled columns (solid water and oxygen) without limit until it overflowed and passed an infinite state to the model (2 of 65 exploration runs failed this way).
 - The structure calibration uses a secant step; the plain ratio update cycled for planets of a few Earth masses, where self-compression makes mass grow faster than reference density.

@@ -4,15 +4,15 @@ Sweep initial orbital states of one planet configuration with tides on and off.
 Every case is a normal `run_model.run` call with configuration overrides, so the TOML files are never edited. Cases
 run in parallel, each in its own directory with its own output table, JSON summary, and log. Finished cases are
 skipped on re-runs (use --force to redo them). A combined table, ``sweep_summary.tsv``, pairs every tides-on case with
-its tides-off baseline for auto_plot_v3.py.
+its tides-off baseline for auto_plot.py.
 
 Without tides the orbit and spins never change and do not affect the planet, so tides-off runs ignore the keys in
 TIDES_ONLY_KEYS: one tides-off run is made per combination of the remaining sweep keys.
 
 Usage::
 
-    python auto_run_v3.py
-    python auto_run_v3.py --config trappist1e.toml --workers 8 --end-time 1e9
+    python auto_run.py
+    python auto_run.py --config trappist1e.toml --workers 8 --end-time 1e9
 """
 import argparse
 import itertools
@@ -52,7 +52,7 @@ TIDES_ONLY_KEYS = ('planet.orbit.initial_eccentricity', 'planet.initial_spin_mul
 
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / 'results'
 
-log = get_logger('auto_run_v3')
+log = get_logger('auto_run')
 
 
 # ======================================================================================================================
@@ -114,7 +114,7 @@ def run_case(config, case, output_root, plot_each):
                       show_progress=False, log_file=case_dir / 'run.log')
     except Exception as error:
         # Keep the traceback in the case's log so the failure can be diagnosed; the sweep records it as failed.
-        get_logger('auto_run_v3').exception(f"Case {case['case_id']} raised.")
+        get_logger('auto_run').exception(f"Case {case['case_id']} raised.")
         record.update(success=False, message=f'{type(error).__name__}: {error}')
         return record
     record.update(results['summary'])
